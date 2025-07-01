@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 from app.db import models
 from app.crud import crud_expression, crud_domain, crud_link, crud_media
-from app.core.config import settings
+from app.config import settings
 from app.core.text_processing import expression_relevance, get_land_dictionary
 from app.core.content_extractor import get_readable_content, get_metadata
 from app.core.media_processor import MediaProcessor
@@ -65,7 +65,7 @@ class CrawlerEngine:
             print(f"Direct fetch failed for {expression.url}. Trying Archive.org...")
             raw_html, status_code, final_url = await self._fetch_archive_org(expression.url)
 
-        expression.http_status = str(status_code)
+        expression.http_status = status_code
         expression.fetched_at = datetime.now()
 
         if not raw_html:
@@ -146,7 +146,7 @@ class CrawlerEngine:
 
     async def _extract_and_save_links(self, soup: BeautifulSoup, expression: models.Expression):
         """Extrait et sauvegarde les liens sortants."""
-        if expression.depth is not None and expression.depth >= settings.CRAWL_MAX_DEPTH:
+        if expression.depth is not None and expression.depth >= settings.MAX_CRAWL_DEPTH:
             return
 
         # Supprimer les anciens liens

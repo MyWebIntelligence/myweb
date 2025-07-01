@@ -13,7 +13,7 @@ from app.core.celery_app import celery_app
 
 router = APIRouter()
 
-@router.post("/", response_model=schemas.Job, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/", response_model=schemas.CrawlJob, status_code=status.HTTP_202_ACCEPTED)
 async def create_export(
     *,
     db: AsyncSession = Depends(dependencies.get_db),

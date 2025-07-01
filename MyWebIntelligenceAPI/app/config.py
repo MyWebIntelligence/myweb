@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1"]
     
     # Configuration de sécurité
+    API_V1_PREFIX: str = "/api/v1"
     API_KEY_HEADER: str = "X-API-Key"
     RATE_LIMIT_PER_MINUTE: int = 60
     
@@ -56,6 +57,8 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 100
     ALLOWED_IMAGE_TYPES: List[str] = ["jpeg", "jpg", "png", "gif", "webp", "svg"]
     ALLOWED_VIDEO_TYPES: List[str] = ["mp4", "webm", "avi", "mov"]
+    ANALYZE_MEDIA: bool = True
+    N_DOMINANT_COLORS: int = 5
     
     # Configuration export
     EXPORT_STORAGE_PATH: str = "./exports"

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional, Any
 from datetime import datetime
 from .base import TimeStampedSchema
-from ..db.models import CrawlStatus as JobStatus
+from app.db.models import CrawlStatus as JobStatus
 
 # Schéma de base pour un Job
 class CrawlJobBase(BaseModel):

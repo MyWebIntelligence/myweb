@@ -39,6 +39,7 @@ python-magic==0.4.27  # Détection de types de fichiers
 imagehash==4.3.1  # Hash perceptuel des images
 colorthief==0.2.1  # Extraction de couleurs dominantes
 exifread==3.0.0  # Lecture des métadonnées EXIF
+scikit-learn==1.3.2 # Pour le clustering de couleurs
 
 # WebSocket
 websockets==12.0

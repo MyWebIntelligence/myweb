@@ -15,7 +15,7 @@ class ExportBase(BaseModel):
 
 # Schéma pour la création d'un Export
 class ExportCreate(ExportBase):
-    pass
+    minimum_relevance: float = 0.5
 
 # Schéma pour la mise à jour d'un Export
 class ExportUpdate(BaseModel):

@@ -33,7 +33,7 @@ async def get_expressions_to_crawl(
         query = query.limit(limit)
 
     result = await db.execute(query)
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 async def get_or_create_expression(
     db: AsyncSession, land_id: int, url: str, depth: int
@@ -80,3 +80,25 @@ async def update_expression(
     await db.commit()
     await db.refresh(db_obj)
     return db_obj
+
+async def get_expressions_to_consolidate(
+    db: AsyncSession, land_id: int, limit: int = 0, depth: Optional[int] = None
+) -> List[models.Expression]:
+    """
+    Récupère les expressions qui ont déjà été crawlées et qui ont besoin d'être consolidées.
+    """
+    query = (
+        select(models.Expression)
+        .where(models.Expression.land_id == land_id)
+        .where(models.Expression.fetched_at.isnot(None))
+        .order_by(models.Expression.fetched_at.asc())
+    )
+
+    if depth is not None:
+        query = query.where(models.Expression.depth <= depth)
+
+    if limit > 0:
+        query = query.limit(limit)
+
+    result = await db.execute(query)
+    return list(result.scalars().all())

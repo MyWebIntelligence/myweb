@@ -12,7 +12,7 @@ from PIL import Image, UnidentifiedImageError
 from sklearn.cluster import KMeans
 from bs4 import BeautifulSoup
 
-from app.core.config import settings
+from app.config import settings
 
 def generer_palette_web_safe():
     """Génère les 216 couleurs RGB de la palette Web Safe."""
@@ -33,7 +33,7 @@ class MediaProcessor:
     
     def __init__(self, http_client: httpx.AsyncClient):
         self.http_client = http_client
-        self.max_size = settings.MAX_MEDIA_SIZE_MB * 1024 * 1024
+        self.max_size = settings.MAX_FILE_SIZE_MB * 1024 * 1024
 
     async def analyze_image(self, url: str) -> Dict[str, Any]:
         """Analyse complète d'une image."""

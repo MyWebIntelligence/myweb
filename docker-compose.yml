@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -21,7 +19,7 @@ services:
     networks:
       - webintelligence
 
-  api:
+  mywebintelligenceapi:
     build:
       context: ./MyWebIntelligenceAPI
       dockerfile: Dockerfile
@@ -38,20 +36,22 @@ services:
     networks:
       - webintelligence
 
-  client:
+  mywebclient:
     build:
       context: ./MyWebClient
       dockerfile: Dockerfile
+    command: yarn standalone
     volumes:
       - ./MyWebClient:/app
       - /app/node_modules
     ports:
-      - "3002:3000"
+      - "3002:3001"
+    env_file:
+      - ./MyWebClient/.env
     environment:
       - NODE_ENV=development
-      - REACT_APP_API_URL=http://localhost:8000
     depends_on:
-      - api
+      - mywebintelligenceapi
     networks:
       - webintelligence
 

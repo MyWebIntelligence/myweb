@@ -25,7 +25,7 @@ async def get_lands_by_owner(db: AsyncSession, owner_id: int, skip: int = 0, lim
         .order_by(models.Land.created_at.desc())
     )
     result = await db.execute(query)
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 async def create_land(db: AsyncSession, *, land_in: LandCreate, owner_id: int) -> models.Land:
     """Crée un nouveau land."""
@@ -57,5 +57,5 @@ async def update_land_status(db: AsyncSession, land_id: int, status: JobStatus):
     """Met à jour le statut de crawling d'un land."""
     land = await get_land(db, land_id)
     if land:
-        land.crawl_status = status
+        land.crawl_status = status.value
         await db.commit()

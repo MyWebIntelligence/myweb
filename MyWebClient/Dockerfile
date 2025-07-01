@@ -3,8 +3,16 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY . .
-RUN yarn install
-# Check package.json for postinstall scripts
 
+# Installer les dépendances du serveur et du client
+RUN yarn install
+
+# Construire l'application client React pour la production
+WORKDIR /app/client
+# Ajout de cette ligne pour résoudre l'erreur OpenSSL
+ENV NODE_OPTIONS=--openssl-legacy-provider
+RUN yarn build
 WORKDIR /app
-CMD ["yarn", "standalone"]
+
+# La commande de démarrage du serveur
+CMD ["yarn", "server"]

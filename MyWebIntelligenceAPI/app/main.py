@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from .api.router import api_router
-from MyWebIntelligenceAPI.app.core.config import settings
+from app.config import settings
 
 app = FastAPI(
     title=settings.APP_NAME,

@@ -476,6 +476,26 @@ class CrawlJob(Base):
     )
 
 
+class Word(Base):
+    """Modèle pour les mots et leurs lemmes"""
+    __tablename__ = "words"
+
+    id = Column(Integer, primary_key=True, index=True)
+    word = Column(String(255), unique=True, nullable=False, index=True)
+    lemma = Column(String(255), nullable=False, index=True)
+
+class LandDictionary(Base):
+    """Table de liaison pour les dictionnaires de lands"""
+    __tablename__ = "land_dictionaries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    land_id = Column(Integer, ForeignKey("lands.id"), nullable=False)
+    word_id = Column(Integer, ForeignKey("words.id"), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('land_id', 'word_id', name='uq_land_word'),
+    )
+
 class Export(Base):
     """
     Modèle Export - Exports de données
