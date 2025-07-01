@@ -1,18 +1,122 @@
 version: '3.8'
 
 services:
-  mywebclient:
-    build: .
-    ports:
-      - "5001:5001"
-    environment:
-      # Vous pouvez ajouter d'autres variables d'environnement ici si nécessaire
-      # Par exemple, pour la base de données ou d'autres configurations
-      NODE_ENV: production
+  postgres:
+    image: postgres:15-alpine
     volumes:
-      # Monter le répertoire du projet pour le développement (optionnel, mais utile pour les changements en direct)
-      # - .:/app
-      # Si vous ne voulez pas de montage de volume pour la production, commentez la ligne ci-dessus
-      # et assurez-vous que le Dockerfile copie bien tous les fichiers nécessaires.
-      - /app/node_modules # Exclure node_modules du montage si le volume est activé
-    restart: always
+      - postgres_data:/var/lib/postgresql/data/
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mywebintelligence
+    networks:
+      - webintelligence
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - webintelligence
+
+  api:
+    build:
+      context: ./MyWebIntelligenceAPI
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./MyWebIntelligenceAPI:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - webintelligence
+
+  client:
+    build:
+      context: ./MyWebClient
+      dockerfile: Dockerfile
+    volumes:
+      - ./MyWebClient:/app
+      - /app/node_modules
+    ports:
+      - "3002:3000"
+    environment:
+      - NODE_ENV=development
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    networks:
+      - webintelligence
+
+  celery_worker:
+    build:
+      context: ./MyWebIntelligenceAPI
+      dockerfile: Dockerfile
+    command: celery -A app.core.celery_app worker --loglevel=info
+    volumes:
+      - ./MyWebIntelligenceAPI:/app
+    env_file:
+      - ./.env
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - webintelligence
+
+  flower:
+    build:
+      context: ./MyWebIntelligenceAPI
+      dockerfile: Dockerfile
+    command: celery -A app.core.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file:
+      - ./.env
+    depends_on:
+      - redis
+      - celery_worker
+    networks:
+      - webintelligence
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./MyWebIntelligenceAPI/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - webintelligence
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - webintelligence
+    depends_on:
+      - prometheus
+
+networks:
+  webintelligence:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:

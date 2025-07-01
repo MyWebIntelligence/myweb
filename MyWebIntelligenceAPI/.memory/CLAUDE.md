@@ -106,7 +106,7 @@ yarn test    # Run tests
 
 ### Overall Structure
 MyWebClient is a full-stack web application for working with MyWebIntelligence data, consisting of:
-- **Backend**: Node.js Express server providing REST API for data access and authentication
+- **Backend**: FastAPI server providing a REST API for data access and authentication.
 - **Frontend**: React SPA with routing, context-based state management, and component-based UI
 
 ### Backend (server/)
@@ -170,10 +170,22 @@ The application requires a SQLite database file (`mwi.db`) created by the MyWebI
 - Password reset functionality via email (requires RESEND_API_KEY)
 - User management through admin interface
 
-## File Structure Notes
+## Implémentation de la Consolidation et de l'Export
 
-- ES modules used throughout (import/export syntax)
-- React components follow functional component pattern with hooks
-- CSS modules and regular CSS files for styling
-- FontAwesome included for icons
-- Bootstrap for UI components
+### Consolidation
+
+- **Objectif**: Recalculer la pertinence, les liens et les médias pour un land donné à partir du contenu déjà crawlé.
+- **Endpoint**: `POST /api/v1/lands/{land_id}/consolidate`
+- **Logique**: 
+    - Ajout d'une méthode `consolidate_land` au `CrawlerEngine`.
+    - Création d'une tâche Celery `consolidate_land_task` pour exécuter la consolidation en arrière-plan.
+    - Le service `CrawlingService` orchestre l'appel à la tâche.
+
+### Export
+
+- **Objectif**: Exporter les données d'un land dans différents formats (CSV, GEXF, etc.).
+- **Endpoint**: `POST /api/v1/export/`
+- **Logique**:
+    - Création d'un `ExportService` pour gérer la logique d'exportation.
+    - Création d'une tâche Celery `export_land_task` pour générer les fichiers d'export en arrière-plan.
+    - L'API retourne un `job_id` pour suivre la progression de l'export et télécharger le fichier une fois prêt.

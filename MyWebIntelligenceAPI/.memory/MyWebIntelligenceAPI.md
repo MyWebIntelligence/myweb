@@ -52,72 +52,66 @@ Ce document présente le plan de développement produit pour la création d'une 
 
 ## 2. Architecture Cible FastAPI
 
-### 2.1 Structure du Projet
+### 2.1 Structure du Projet (Révisée)
+
+La structure est optimisée pour une séparation claire des responsabilités (SoC) et pour isoler la logique métier portée depuis le crawler original.
 
 ```
 MyWebIntelligenceAPI/
 ├── app/
 │   ├── __init__.py
 │   ├── main.py                 # Point d'entrée FastAPI
-│   ├── config.py               # Configuration
-│   ├── dependencies.py         # Dépendances communes
+│   ├── config.py               # Configuration (Pydantic BaseSettings)
+│   ├── dependencies.py         # Dépendances (ex: get_db, get_current_user)
 │   │
 │   ├── api/
 │   │   ├── __init__.py
-│   │   ├── v1/
-│   │   │   ├── __init__.py
-│   │   │   ├── endpoints/
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── lands.py
-│   │   │   │   ├── domains.py
-│   │   │   │   ├── expressions.py
-│   │   │   │   ├── crawling.py
-│   │   │   │   ├── media.py
-│   │   │   │   ├── tags.py
-│   │   │   │   ├── export.py
-│   │   │   │   ├── auth.py
-│   │   │   │   └── websocket.py
-│   │   │   └── router.py
-│   │   │
-│   │   └── v2/              # Future versions
+│   │   ├── router.py             # Routeur principal (v1, v2...)
+│   │   └── v1/
+│   │       ├── __init__.py
+│   │       ├── endpoints/
+│   │       │   ├── lands.py
+│   │       │   ├── expressions.py
+│   │       │   ├── crawling.py
+│   │       │   ├── media.py
+│   │       │   ├── export.py
+│   │       │   └── auth.py
+│   │       └── router.py         # Routeur de la v1
 │   │
-│   ├── core/                # Logique métier (depuis crawler)
+│   ├── core/                   # Logique métier de bas niveau (portage du crawler)
 │   │   ├── __init__.py
-│   │   ├── crawling.py
-│   │   ├── media_analyzer.py
-│   │   ├── readable_pipeline.py
-│   │   └── export.py
+│   │   ├── crawler_engine.py     # Adaptation de `core.py` et `controller.py`
+│   │   ├── media_processor.py    # Adaptation de `media_analyzer.py`
+│   │   ├── content_extractor.py  # Adaptation de `readable_pipeline.py`
+│   │   └── data_exporter.py      # Adaptation de `export.py`
 │   │
-│   ├── models/
+│   ├── db/
 │   │   ├── __init__.py
-│   │   ├── database.py      # Configuration DB
-│   │   ├── schemas.py       # Pydantic schemas
-│   │   └── orm.py          # Modèles SQLAlchemy
+│   │   ├── database.py           # SessionFactory et moteur SQLAlchemy
+│   │   ├── orm_models.py         # Modèles SQLAlchemy (ex: Land, Expression)
+│   │   └── schemas.py            # Modèles Pydantic (ex: LandCreate, LandResponse)
 │   │
-│   ├── services/
+│   ├── services/                 # Services de haut niveau, orchestrent le `core`
 │   │   ├── __init__.py
 │   │   ├── land_service.py
 │   │   ├── crawl_service.py
-│   │   ├── media_service.py
 │   │   ├── export_service.py
-│   │   └── auth_service.py
+│   │   └── auth_service.py       # Logique d'authentification et gestion user
 │   │
-│   ├── tasks/              # Tâches asynchrones
+│   ├── tasks/                    # Tâches asynchrones (Celery)
 │   │   ├── __init__.py
 │   │   ├── celery_app.py
-│   │   ├── crawl_tasks.py
-│   │   └── media_tasks.py
+│   │   ├── crawl_tasks.py        # Tâches: start_crawl, consolidate, analyze_media
+│   │   └── export_tasks.py       # Tâches: generate_csv, generate_gexf
 │   │
 │   └── utils/
 │       ├── __init__.py
-│       ├── validators.py
 │       ├── exceptions.py
-│       └── helpers.py
+│       └── security.py           # Helpers pour JWT, mots de passe
 │
-├── migrations/             # Alembic migrations
+├── migrations/                 # Alembic migrations
 ├── tests/
-├── docker/
-├── docs/
+├── .env.example                # Fichier d'exemple pour les variables d'environnement
 ├── requirements.txt
 ├── docker-compose.yml
 └── README.md
@@ -127,16 +121,17 @@ MyWebIntelligenceAPI/
 
 - **Framework**: FastAPI 0.104+
 - **Database**: PostgreSQL 15+
-- **ORM**: SQLAlchemy 2.0 (migration depuis Peewee vers PostgreSQL)
-- **Validation**: Pydantic v2
-- **Async**: asyncio, aiohttp
-- **Queue**: Celery + Redis
+- **ORM**: SQLAlchemy 2.0 (style asynchrone)
+- **Validation & Configuration**: Pydantic v2 (y compris `BaseSettings` pour la config)
+- **Async**: `asyncio`, `aiohttp` (pour les requêtes HTTP sortantes)
+- **Tâches Asynchrones**: Celery + Redis (ou RabbitMQ)
 - **Cache**: Redis
-- **WebSocket**: FastAPI WebSocket
-- **Auth**: JWT (PyJWT) + OAuth2
-- **Monitoring**: Prometheus + Grafana
-- **Logging**: structlog
-- **Testing**: pytest + pytest-asyncio
+- **WebSocket**: FastAPI WebSocket pour le suivi en temps réel
+- **Authentification**: JWT (PyJWT) + `python-multipart` pour les formulaires OAuth2
+- **Migrations DB**: Alembic
+- **Monitoring**: Prometheus (via `starlette-prometheus`) + Grafana
+- **Logging**: `structlog` pour des logs structurés et clairs
+- **Testing**: `pytest` + `pytest-asyncio` + `httpx` pour les tests d'API asynchrones
 
 ## 3. Spécifications API
 
@@ -153,13 +148,14 @@ POST   /api/v1/lands/{land_id}/terms    # Ajouter des termes
 POST   /api/v1/lands/{land_id}/urls     # Ajouter des URLs
 ```
 
-#### Crawling Operations
+#### Crawling Operations & Jobs
 ```
-POST   /api/v1/lands/{land_id}/crawl    # Lancer un crawl
-GET    /api/v1/crawl/jobs/{job_id}      # Status d'un job
-POST   /api/v1/crawl/jobs/{job_id}/cancel # Annuler un job
-POST   /api/v1/lands/{land_id}/consolidate # Consolider
-POST   /api/v1/lands/{land_id}/readable # Pipeline readable
+POST   /api/v1/lands/{land_id}/crawl    # Lancer un crawl (retourne un job_id)
+POST   /api/v1/lands/{land_id}/consolidate # Lancer une consolidation (job)
+GET    /api/v1/jobs/{job_id}            # Status d'un job (crawl, export, etc.)
+POST   /api/v1/jobs/{job_id}/cancel     # Annuler un job
+POST   /api/v1/lands/{land_id}/consolidate # Lancer une consolidation (job)
+POST   /api/v1/lands/{land_id}/readable # Lancer le pipeline readable (job)
 ```
 
 #### Expressions
@@ -191,7 +187,7 @@ GET    /api/v1/export/download/{file_id} # Télécharger
 
 #### WebSocket
 ```
-WS     /api/v1/ws/crawl/{land_id}       # Updates temps réel
+WS     /api/v1/ws/jobs/{job_id}         # Updates temps réel pour un job spécifique
 ```
 
 ### 3.2 Schémas Pydantic
@@ -227,34 +223,39 @@ class CrawlJobResponse(BaseModel):
 
 ## 4. Plan de Migration
 
-### 4.1 Phase 1: Foundation (Semaines 1-4)
+### 4.1 Phase 1: Foundation & Auth (Semaines 1-4)
+
+**Objectif**: Mettre en place une base applicative solide et sécurisée.
 
 **Semaine 1-2: Setup et Architecture**
-- [ ] Initialiser le projet FastAPI
-- [ ] Configurer l'environnement Docker
-- [ ] Migrer les modèles Peewee vers SQLAlchemy
-- [ ] Créer les schémas Pydantic de base
-- [ ] Setup Alembic pour les migrations
+- [x] Initialiser le projet FastAPI avec la structure de dossiers révisée.
+- [ ] Configurer l'environnement Docker (API, Postgres, Redis) via `docker-compose.yml`.
+- [x] Définir les modèles SQLAlchemy dans `db/models.py` et les schémas Pydantic dans `schemas/`.
+- [ ] Mettre en place Alembic et générer la migration initiale de la base de données.
+- [x] Configurer `config.py` avec Pydantic `BaseSettings` pour gérer les variables d'environnement.
 
-**Semaine 3-4: Core API**
-- [ ] Implémenter l'authentification JWT
-- [ ] Créer les endpoints CRUD de base (Lands, Domains)
-- [ ] Intégrer la logique de validation
-- [ ] Tests unitaires fondamentaux
+**Semaine 3-4: Authentification et CRUD de base**
+- [x] Implémenter le `auth_service.py` en portant la logique de `AdminDB.js` (gestion des utilisateurs, mots de passe hashés, tentatives de connexion, blocage).
+- [x] Créer les endpoints d'authentification (`/token`, `/users/me`) avec dépendances de sécurité.
+- [x] Implémenter les endpoints CRUD complets pour la ressource `Land`.
+- [x] Rédiger les tests unitaires et d'intégration pour l'authentification et les `Lands`.
 
-### 4.2 Phase 2: Crawling Engine (Semaines 5-8)
+### 4.2 Phase 2: Porting the Crawling Engine (Semaines 5-8)
 
-**Semaine 5-6: Migration Core**
-- [ ] Porter `core.py` en service asynchrone
-- [ ] Adapter le pipeline de crawling
-- [ ] Intégrer Celery pour les tâches longues
-- [ ] WebSocket pour updates temps réel
+**Objectif**: Migrer le cœur fonctionnel du crawler et le rendre accessible via l'API.
 
-**Semaine 7-8: Features Avancées**
-- [ ] Porter `readable_pipeline.py`
-- [ ] Porter `media_analyzer.py`
-- [ ] Implémenter la consolidation
-- [ ] Tests d'intégration
+**Semaine 5-6: Migration de la Logique Métier**
+- [x] Adapter la logique de `core.py` et `controller.py` dans le `services/crawling_service.py` en utilisant des méthodes asynchrones et des sessions SQLAlchemy.
+- [x] Mettre en place Celery et créer la première tâche asynchrone: `start_crawl_task`.
+- [x] Créer le `crawl_service.py` qui orchestre l'appel à la tâche Celery.
+- [x] Implémenter l'endpoint `POST /api/v1/lands/{land_id}/crawl`.
+- [ ] Mettre en place le WebSocket pour suivre la progression d'un job.
+
+**Semaine 7-8: Intégration des Pipelines**
+- [ ] Porter la logique de `readable_pipeline.py` dans `core/content_extractor.py` et l'intégrer comme une tâche Celery.
+- [ ] Porter la logique de `media_analyzer.py` dans `core/media_processor.py` et l'intégrer comme une tâche Celery.
+- [ ] Implémenter les endpoints pour lancer la consolidation et l'analyse des médias.
+- [ ] Rédiger des tests d'intégration complets pour le pipeline de crawling.
 
 ### 4.3 Phase 3: Export & Analytics (Semaines 9-10)
 
@@ -346,46 +347,42 @@ La migration de SQLite vers PostgreSQL est une étape clé pour la scalabilité 
    - Stateless API servers
 
 2. **Architecture Docker Modulaire**
-   Le déploiement sera orchestré via `docker-compose.yml` pour assurer une modularité maximale entre les services. Chaque composant sera un service distinct, permettant un développement, un déploiement et une mise à l'échelle indépendants.
+   Le déploiement sera orchestré via `docker-compose.yml` pour assurer une modularité maximale.
 
-   **Exemple de `docker-compose.yml` :**
+   **Exemple de `docker-compose.yml` amélioré :**
    ```yaml
    version: '3.8'
 
    services:
-     # API FastAPI (anciennement crawler)
+     # API FastAPI
      api:
        build:
          context: .
-         dockerfile: docker/api/Dockerfile
+         dockerfile: Dockerfile # Dockerfile à la racine pour l'API
+       command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+       volumes:
+         - .:/app
        ports:
          - "8000:8000"
+       env_file:
+         - .env
        depends_on:
          - postgres
          - redis
-       environment:
-         - DATABASE_URL=postgresql://user:password@postgres/mydatabase
-         - REDIS_URL=redis://redis:6379
 
-     # Frontend React (MyWebClient)
-     client:
-       build:
-         context: ./MyWebClient # Supposant que le client est dans un sous-dossier
-         dockerfile: Dockerfile
-       ports:
-         - "3000:3000"
-       depends_on:
-         - api
+     # Frontend React (MyWebClient) - Exécuté séparément ou via un autre compose
+     # Pour le développement, il est souvent préférable de le lancer localement.
+     # Pour la production, il serait servi par un serveur web comme Nginx.
 
      # Base de données PostgreSQL
      postgres:
        image: postgres:15-alpine
        volumes:
          - postgres_data:/var/lib/postgresql/data/
-       environment:
-         - POSTGRES_USER=user
-         - POSTGRES_PASSWORD=password
-         - POSTGRES_DB=mydatabase
+       ports:
+         - "5432:5432" # Exposer pour un accès local si nécessaire
+       env_file:
+         - .env
 
      # Redis pour Celery et Caching
      redis:
@@ -395,15 +392,20 @@ La migration de SQLite vers PostgreSQL est une étape clé pour la scalabilité 
      celery_worker:
        build:
          context: .
-         dockerfile: docker/worker/Dockerfile
-       command: celery -A app.tasks.celery_app worker --loglevel=info
+         dockerfile: Dockerfile
+       command: celery -A app.celery_app worker --loglevel=info
+       volumes:
+         - .:/app
+       env_file:
+         - .env
        depends_on:
          - redis
-         - api
+         - postgres
 
    volumes:
      postgres_data:
    ```
+   Cette structure utilise un fichier `.env` pour la configuration, ce qui est une meilleure pratique de sécurité et de flexibilité que de coder en dur les variables dans le fichier `compose`.
    Cette structure garantit que :
    - **L'API, le client et la base de données sont des conteneurs distincts.**
    - Ils peuvent être déployés ensemble ou séparément.
@@ -545,19 +547,45 @@ logger.info("crawl_started",
 
 ### 10.2 Budget Estimé
 
-- **Développement**: 12 semaines × 5 personnes = ~€150,000
-- **Infrastructure** (année 1): ~€24,000
-- **Outils & Licences**: ~€10,000
-- **Total**: ~€184,000
+#### 10.2.1 Coûts de Développement
+- **Lead Developer** (12 semaines): €60,000
+- **Backend Developers** (2 × 12 semaines): €96,000
+- **DevOps Engineer** (6 semaines équivalent): €30,000
+- **QA Engineer** (9 semaines équivalent): €27,000
+- **Technical Writer** (3 semaines équivalent): €9,000
+- **Total Développement**: €222,000
+
+#### 10.2.2 Coûts Infrastructure (Année 1)
+- **Cloud Computing** (AWS/GCP): €18,000
+- **Database** (PostgreSQL managed): €4,800
+- **Monitoring & Logging**: €3,600
+- **CDN & Storage**: €2,400
+- **Total Infrastructure**: €28,800
+
+#### 10.2.3 Outils & Licences
+- **CI/CD & Development Tools**: €6,000
+- **Security & Monitoring Tools**: €4,800
+- **Documentation Platform**: €1,200
+- **Total Outils**: €12,000
+
+#### 10.2.4 Budget Total
+- **Développement**: €222,000
+- **Infrastructure**: €28,800
+- **Outils & Licences**: €12,000
+- **Contingence (15%)**: €39,420
+- **Total Projet**: €302,220
 
 ### 10.3 Risques et Mitigation
 
-| Risque | Impact | Probabilité | Mitigation |
-|--------|--------|-------------|------------|
-| Migration de données complexe | Élevé | Moyen | Tests exhaustifs, rollback plan |
-| Performance dégradée | Moyen | Faible | Benchmarks continus, optimisation |
-| Adoption utilisateurs | Moyen | Moyen | Documentation, support actif |
-| Sécurité des données | Élevé | Faible | Audits sécurité, best practices |
+| Risque | Impact | Probabilité | Mitigation | Actions Préventives |
+|--------|--------|-------------|------------|-------------------|
+| Migration de données complexe | Élevé | Moyen | Tests exhaustifs, rollback plan | POC migration, validation incrémentale |
+| Performance dégradée | Moyen | Faible | Benchmarks continus, optimisation | Tests de charge précoces, profiling |
+| Adoption utilisateurs | Moyen | Moyen | Documentation, support actif | Beta users, feedback loops |
+| Sécurité des données | Élevé | Faible | Audits sécurité, best practices | Pen testing, review code |
+| Complexité intégration | Moyen | Élevé | Architecture découplée, APIs bien définies | Prototypage, tests d'intégration |
+| Dépassement planning | Moyen | Moyen | Buffer temps, priorisation features | Sprints agiles, reviews fréquentes |
+| Scalabilité insuffisante | Élevé | Faible | Architecture cloud-native, tests charge | Load testing, architecture review |
 
 ## 11. Critères de Succès
 

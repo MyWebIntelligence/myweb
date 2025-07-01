@@ -1,0 +1,30 @@
+"""
+Opérations CRUD pour les médias.
+"""
+from typing import Dict, Any
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete
+
+from app.db import models
+from app.schemas.media import MediaCreate
+
+async def create_media(db: AsyncSession, expression_id: int, media_data: Dict[str, Any]) -> models.Media:
+    """
+    Crée un nouvel enregistrement de média dans la base de données.
+    """
+    media_obj = models.Media(
+        expression_id=expression_id,
+        **media_data
+    )
+    db.add(media_obj)
+    await db.commit()
+    await db.refresh(media_obj)
+    return media_obj
+
+async def delete_media_for_expression(db: AsyncSession, expression_id: int):
+    """
+    Supprime tous les médias associés à une expression.
+    """
+    stmt = delete(models.Media).where(models.Media.expression_id == expression_id)
+    await db.execute(stmt)
+    await db.commit()
