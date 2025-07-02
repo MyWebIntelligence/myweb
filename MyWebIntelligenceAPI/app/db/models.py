@@ -120,8 +120,7 @@ class Land(Base):
     words = relationship(
         "Word",
         secondary="land_dictionaries",
-        backref="lands",
-        lazy="dynamic"
+        backref="lands"
     )
 
     # Index

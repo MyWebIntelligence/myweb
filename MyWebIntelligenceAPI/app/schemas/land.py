@@ -41,14 +41,6 @@ class WordInDict(BaseModel):
     class Config:
         from_attributes = True
 
-class DictionaryItem(BaseModel):
-    """Représente une entrée dans la table d'association LandDictionary."""
-    word: WordInDict
-    weight: float
-
-    class Config:
-        from_attributes = True
-
 # Schéma pour l'affichage d'un Land (enrichi avec le dictionnaire)
 class Land(TimeStampedSchema):
     id: int
@@ -60,7 +52,7 @@ class Land(TimeStampedSchema):
     total_expressions: int
     total_domains: int
     last_crawl: Optional[datetime] = None
-    words: List[DictionaryItem] = []
+    words: List[WordInDict] = []
 
     class Config:
         from_attributes = True

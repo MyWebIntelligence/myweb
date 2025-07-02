@@ -78,11 +78,10 @@ def display_land_details(land: dict):
         dict_table.add_column("Stem/Lemme", style="yellow")
         dict_table.add_column("Poids", style="blue")
         
-        for item in words:
-            word_details = item.get('word', {})
-            term = word_details.get('word', 'N/A')
-            lemma = word_details.get('lemma', 'N/A')
-            weight = str(item.get('weight', 'N/A'))
+        for word_obj in words:
+            term = word_obj.get('word', 'N/A')
+            lemma = word_obj.get('lemma', 'N/A')
+            weight = 'N/A'  # Le poids n'est plus dans cette structure
             dict_table.add_row(term, lemma, weight)
         
         console.print(dict_table)

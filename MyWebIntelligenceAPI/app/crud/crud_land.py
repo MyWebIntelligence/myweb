@@ -42,7 +42,7 @@ async def create_land(db: AsyncSession, *, land_in: LandCreate, owner_id: int) -
     db_land = models.Land(**land_data, owner_id=owner_id)
     db.add(db_land)
     await db.commit()
-    await db.refresh(db_land)
+    await db.refresh(db_land, attribute_names=["words"])
     return db_land
 
 async def update_land(db: AsyncSession, *, db_land: models.Land, land_in: LandUpdate) -> models.Land:
