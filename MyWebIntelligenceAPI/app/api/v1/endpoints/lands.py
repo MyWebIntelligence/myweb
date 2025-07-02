@@ -28,7 +28,7 @@ async def create_land(
     Créer un nouveau land.
     """
     if current_user.id is not None:
-        land = await crud_land.create_land(db=db, land_in=land_in, owner_id=current_user.id)
+        land = await crud_land.create_land(db=db, land_in=land_in, owner_id=current_user.id)  # type: ignore
         return land
     raise HTTPException(status_code=400, detail="Invalid user")
 
@@ -44,7 +44,7 @@ async def read_lands(
     """
     if current_user.id is not None:
         lands = await crud_land.get_lands_by_owner(
-            db=db, owner_id=current_user.id, skip=skip, limit=limit
+            db=db, owner_id=current_user.id, skip=skip, limit=limit  # type: ignore
         )
         return lands
     return []
@@ -62,7 +62,7 @@ async def read_land(
     land = await crud_land.get_land(db, land_id=land_id)
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
-    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:
+    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:  # type: ignore
         raise HTTPException(status_code=403, detail="Not enough permissions")
     return land
 
@@ -80,7 +80,7 @@ async def update_land(
     land = await crud_land.get_land(db, land_id=land_id)
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
-    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:
+    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:  # type: ignore
         raise HTTPException(status_code=403, detail="Not enough permissions")
     land = await crud_land.update_land(db=db, db_land=land, land_in=land_in)
     return land
@@ -98,7 +98,7 @@ async def delete_land(
     land = await crud_land.get_land(db, land_id=land_id)
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
-    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:
+    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:  # type: ignore
         raise HTTPException(status_code=403, detail="Not enough permissions")
     land = await crud_land.delete_land(db=db, land_id=land_id)
     return land
@@ -117,7 +117,7 @@ async def crawl_land(
     land = await crud_land.get_land(db, land_id=land_id)
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
-    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:
+    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:  # type: ignore
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     # Créer un ID de job unique
@@ -144,7 +144,7 @@ async def consolidate_land(
     land = await crud_land.get_land(db, land_id=land_id)
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
-    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:
+    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:  # type: ignore
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
     job_id = str(uuid.uuid4())
@@ -154,3 +154,44 @@ async def consolidate_land(
         return {"job_id": job_id, "status": "started", "message": "Consolidation job initiated"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start consolidation job: {str(e)}")
+
+@router.post("/{land_id}/terms", response_model=schemas.Land)
+async def add_terms_to_land_endpoint(
+    *,
+    db: AsyncSession = Depends(dependencies.get_db),
+    land_id: int,
+    terms_in: schemas.LandAddTerms,
+    current_user: models.User = Depends(dependencies.get_current_active_user),
+):
+    """
+    Ajouter des termes à un land.
+    """
+    land = await crud_land.get_land(db, land_id=land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land not found")
+    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:  # type: ignore
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+    updated_land = await crud_land.add_terms_to_land(db=db, land=land, terms=terms_in.terms)
+    return updated_land
+
+@router.get("/{land_id}/dictionary", response_model=schemas.Land)
+async def get_land_dictionary(
+    *,
+    db: AsyncSession = Depends(dependencies.get_db),
+    land_id: int,
+    current_user: models.User = Depends(dependencies.get_current_active_user),
+):
+    """
+    Récupérer le dictionnaire de mots et lemmes pour un land.
+    """
+    land = await crud_land.get_land(db, land_id=land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land not found")
+    if current_user.id is not None and land.owner_id != current_user.id and not current_user.is_admin:  # type: ignore
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    
+    # La logique pour peupler le dictionnaire est maintenant gérée par le schéma Pydantic
+    # et la configuration de la relation dans SQLAlchemy.
+    # Il suffit de retourner l'objet land.
+    return land

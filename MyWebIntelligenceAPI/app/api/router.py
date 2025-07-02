@@ -9,7 +9,7 @@ from .v1.router import api_router as v1_router
 api_router = APIRouter()
 
 # Inclusion des versions d'API
-api_router.include_router(v1_router, prefix="/v1")
+api_router.include_router(v1_router)
 
 # Endpoint de base pour info API
 @api_router.get("/")

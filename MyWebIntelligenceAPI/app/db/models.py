@@ -98,6 +98,7 @@ class Land(Base):
     
     # Configuration du crawling
     start_urls = Column(JSON, nullable=True)  # Liste des URLs de départ
+    lang = Column(String(255), nullable=True) # Langues du projet (ex: "en,fr")
     crawl_depth = Column(Integer, default=3)
     crawl_limit = Column(Integer, default=1000)
     crawl_status = Column(Enum(CrawlStatus), default=CrawlStatus.PENDING)
@@ -116,6 +117,12 @@ class Land(Base):
     domains = relationship("Domain", back_populates="land", cascade="all, delete-orphan")
     tags = relationship("Tag", back_populates="land", cascade="all, delete-orphan")
     crawl_jobs = relationship("CrawlJob", back_populates="land")
+    words = relationship(
+        "Word",
+        secondary="land_dictionaries",
+        backref="lands",
+        lazy="dynamic"
+    )
 
     # Index
     __table_args__ = (

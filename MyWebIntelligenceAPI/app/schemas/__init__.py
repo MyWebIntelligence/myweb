@@ -6,7 +6,7 @@ de l'API, assurant la cohérence et la sécurité des échanges.
 """
 
 from .user import User, UserCreate, UserUpdate, Token, TokenData
-from .land import Land, LandCreate, LandUpdate
+from .land import Land, LandCreate, LandUpdate, LandAddTerms
 from .domain import Domain, DomainCreate, DomainUpdate
 from .expression import Expression, ExpressionCreate, ExpressionUpdate
 from .tag import Tag, TagCreate, TagUpdate

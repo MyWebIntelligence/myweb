@@ -3,7 +3,7 @@ Routeur principal de l'API v1
 """
 
 from fastapi import APIRouter
-from .endpoints import auth, lands, websocket, export
+from .endpoints import auth, lands, websocket, export, tags
 
 # Routeur principal v1
 api_router = APIRouter()
@@ -11,6 +11,7 @@ api_router = APIRouter()
 # Inclusion des endpoints par domaine fonctionnel
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(lands.router, prefix="/lands", tags=["lands"])
+api_router.include_router(tags.router, prefix="/tags", tags=["tags"])
 api_router.include_router(websocket.router, prefix="/ws", tags=["websocket"])
 api_router.include_router(export.router, prefix="/export", tags=["export"])
 

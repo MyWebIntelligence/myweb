@@ -6,6 +6,7 @@ ENV PYTHONPATH=/app
 
 # Installer les dépendances système
 RUN apt-get update && apt-get install -y \
+    curl \
     gcc \
     g++ \
     libpq-dev \

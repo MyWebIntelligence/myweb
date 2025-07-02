@@ -10,6 +10,9 @@ from app.config import settings
 # Base pour tous les modèles SQLAlchemy
 Base = declarative_base()
 
+# Import de tous les modèles pour qu'Alembic puisse les détecter
+from app.db.models import *  # noqa
+
 # Engine asynchrone pour PostgreSQL
 engine = create_async_engine(
     settings.DATABASE_URL,

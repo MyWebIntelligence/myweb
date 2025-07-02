@@ -26,9 +26,11 @@ aiohttp==3.9.1
 # Authentification & Sécurité
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 python-multipart==0.0.6
 
 # Traitement de contenu
+langdetect==1.0.9  # Détection de la langue
 trafilatura==1.6.3  # Pour l'extraction de contenu
 newspaper3k==0.2.8  # Alternative pour l'extraction
 readability-lxml==0.8.1  # Extraction de contenu lisible
@@ -55,6 +57,7 @@ pytest-asyncio==0.21.1
 httpx==0.25.2  # Pour les tests d'API
 pytest-cov==4.1.0
 factory-boy==3.3.0  # Pour les fixtures de test
+aiosqlite==0.19.0  # Pour les tests avec SQLite
 
 # Export de données
 pandas==2.1.4
@@ -66,6 +69,7 @@ email-validator==2.1.1
 python-dotenv==1.0.0
 pytz==2023.3
 pyyaml==6.0.1
+rich==13.7.0
 
 # Archive.org support
 internetarchive==3.6.0
