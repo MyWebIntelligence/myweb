@@ -32,9 +32,9 @@ async def setup_test_environment():
             username="admin@example.com", # Le nom d'utilisateur est l'email pour la connexion
             email="admin@example.com",
             password="changethispassword",
-            is_admin=True
+            is_superuser=True
         )
-        await crud_user.create_user(session, user_in=user_in)
+        await crud_user.user.create(session, obj_in=user_in)
         print("✅ Utilisateur admin créé.")
 
 

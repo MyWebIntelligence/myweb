@@ -22,7 +22,7 @@ def get_domain_name(url: str) -> str:
     except Exception:
         return ""
 
-async def get_or_create_domain(db: AsyncSession, name: str) -> models.Domain:
+async def get_or_create(db: AsyncSession, name: str, land_id: Optional[int] = None) -> models.Domain:
     """
     Récupère un domaine par nom ou le crée s'il n'existe pas.
     """
@@ -33,7 +33,7 @@ async def get_or_create_domain(db: AsyncSession, name: str) -> models.Domain:
     if db_domain:
         return db_domain
 
-    domain_in = DomainCreate(name=name)
+    domain_in = DomainCreate(name=name, land_id=land_id)
     new_domain = models.Domain(**domain_in.dict())
     db.add(new_domain)
     await db.commit()

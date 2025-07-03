@@ -74,5 +74,8 @@ rich==13.7.0
 # Archive.org support
 internetarchive==3.6.0
 
+# Traitement NLP
+nltk==3.8.1
+
 # Playwright pour scraping dynamique (optionnel)
-# playwright==1.40.0  # À installer séparément avec: playwright install
+playwright==1.40.0  # À installer séparément avec: playwright install

@@ -69,3 +69,7 @@ class Land(TimeStampedSchema):
 # Schéma pour ajouter des termes à un Land
 class LandAddTerms(BaseModel):
     terms: List[str]
+
+# Schéma pour ajouter des URLs à un Land
+class LandAddUrls(BaseModel):
+    urls: List[str]

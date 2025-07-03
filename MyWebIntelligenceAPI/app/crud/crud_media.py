@@ -3,7 +3,7 @@ Opérations CRUD pour les médias.
 """
 from typing import Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.db import models
 from app.schemas.media import MediaCreate
@@ -20,6 +20,14 @@ async def create_media(db: AsyncSession, expression_id: int, media_data: Dict[st
     await db.commit()
     await db.refresh(media_obj)
     return media_obj
+
+async def media_exists(db: AsyncSession, expression_id: int, url: str) -> bool:
+    """
+    Vérifie si un média existe déjà pour une expression donnée.
+    """
+    query = select(models.Media).where(models.Media.expression_id == expression_id, models.Media.url == url)
+    result = await db.execute(query)
+    return result.scalar_one_or_none() is not None
 
 async def delete_media_for_expression(db: AsyncSession, expression_id: int):
     """

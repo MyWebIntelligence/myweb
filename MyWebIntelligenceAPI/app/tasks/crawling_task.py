@@ -1,52 +1,50 @@
-"""
-Tâche Celery pour le crawling
-"""
+import logging
 import asyncio
 from app.core.celery_app import celery_app
-from app.services.crawling_service import CrawlingService
 from app.db.base import AsyncSessionLocal
+from app.crud import crud_job
+from app.db.models import CrawlStatus
 import httpx
-from app.crud import crud_land, crud_job
-from app.schemas.job import CrawlJobCreate
-from app.db.models import CrawlStatus as JobStatus
+from app.core.crawler_engine import CrawlerEngine
 
-@celery_app.task(bind=True)
-def crawl_land_task(self, land_id: int):
+logger = logging.getLogger(__name__)
+
+@celery_app.task(name="tasks.crawl_land_task", bind=True)
+def crawl_land_task(self, job_id: int):
     """
-    Tâche Celery pour crawler un land.
-    Elle utilise le CrawlingService pour effectuer le travail.
+    Celery task to crawl a land.
     """
     async def async_crawl():
         db = AsyncSessionLocal()
-        async with httpx.AsyncClient() as http_client:
-            service = CrawlingService(db, http_client)
-            job = None
-            try:
-                # 1. Créer un job pour suivre la tâche
-                job_in = CrawlJobCreate(land_id=land_id, job_type="crawling", task_id=self.request.id)
-                job = await crud_job.create(db, obj_in=job_in)
+        job = None
+        land_id_for_logging = None
+        try:
+            async with httpx.AsyncClient() as http_client:
+                engine = CrawlerEngine(db, http_client)
                 
-                # 2. Mettre à jour le statut du land
-                await crud_land.update_land_status(db, land_id=land_id, status=JobStatus.RUNNING)
+                job = await crud_job.job.get(db, job_id=job_id)
+                if not job:
+                    logger.error(f"Crawl job with id {job_id} not found.")
+                    return
 
-                # 3. Lancer le crawling
-                result = await service.crawl_land_directly(land_id)
+                land_id_for_logging = job.land_id
+                await crud_job.job.update_status(db, job_id=job.id, status=CrawlStatus.RUNNING)
                 
-                # 4. Mettre à jour le statut à la fin
-                await crud_land.update_land_status(db, land_id=land_id, status=JobStatus.COMPLETED)
-                await crud_job.update_job_status(db, job_id=job.id, status=JobStatus.COMPLETED, result=result)
+                limit = job.parameters.get("limit") if job.parameters else None
+                depth = job.parameters.get("depth") if job.parameters else None
+                http_status = job.parameters.get("http_status") if job.parameters else None
+
+                processed, errors = await engine.crawl_land(land_id=job.land_id, limit=limit, depth=depth, http_status=http_status)
                 
-                return result
+                await crud_job.job.update_status(db, job_id=job.id, status=CrawlStatus.COMPLETED, result={"processed": processed, "errors": errors})
+                logger.info(f"Crawl for land {job.land_id} completed. Processed: {processed}, Errors: {errors}")
+        except Exception as e:
+            logger.exception(f"Crawl for land {land_id_for_logging or 'unknown'} failed.")
+            if job:
+                await crud_job.job.update_status(db, job_id=job.id, status=CrawlStatus.FAILED, result={"error": str(e)})
+            else:
+                logger.error(f"Could not update status for job {job_id} because it could not be fetched.")
+        finally:
+            await db.close()
 
-            except Exception as e:
-                error_message = str(e)
-                print(f"Error during crawl task for land {land_id}: {error_message}")
-                if job:
-                    await crud_job.update_job_status(db, job_id=job.id, status=JobStatus.FAILED, result={"error": error_message})
-                await crud_land.update_land_status(db, land_id=land_id, status=JobStatus.FAILED)
-                # Re-raise l'exception pour que Celery la marque comme FAILED
-                raise
-            finally:
-                await db.close()
-
-    return asyncio.run(async_crawl())
+    asyncio.run(async_crawl())

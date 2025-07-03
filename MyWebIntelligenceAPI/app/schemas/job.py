@@ -1,35 +1,37 @@
-"""
-Schémas Pydantic pour les Jobs de crawling
-"""
-
-from pydantic import BaseModel
-from typing import Optional, Any
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
 from datetime import datetime
-from .base import TimeStampedSchema
-from app.db.models import CrawlStatus as JobStatus
+import enum
+
+class CrawlStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+class CrawlRequest(BaseModel):
+    limit: Optional[int] = Field(None, description="Max number of URLs to process")
+    depth: Optional[int] = Field(None, description="Crawl depth")
+    http_status: Optional[str] = Field(None, description="Filter by HTTP status for re-crawling")
 
 # Schéma de base pour un Job
 class CrawlJobBase(BaseModel):
     land_id: int
     job_type: str
-    parameters: Optional[dict] = None
+    parameters: Optional[Dict[str, Any]] = None
 
 # Schéma pour la création d'un Job
 class CrawlJobCreate(CrawlJobBase):
     task_id: str
 
-# Schéma pour la mise à jour d'un Job
-class CrawlJobUpdate(BaseModel):
-    status: Optional[JobStatus] = None
-    progress: Optional[float] = None
-    current_step: Optional[str] = None
-    result_data: Optional[dict] = None
-    error_message: Optional[str] = None
-
-# Schéma pour l'affichage d'un Job
-class CrawlJob(TimeStampedSchema):
-    id: int
+class CrawlJobResponse(BaseModel):
+    job_id: int
+    celery_task_id: str
     land_id: int
-    job_type: str
-    status: JobStatus
-    progress: float
+    status: CrawlStatus
+    created_at: datetime
+    parameters: Dict[str, Any]
+
+    class Config:
+        orm_mode = True

@@ -11,8 +11,18 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 from sklearn.cluster import KMeans
 from bs4 import BeautifulSoup
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.db import models
+from app.crud import crud_media
+
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    print("Warning: Playwright not available. Dynamic media extraction will be skipped.")
 
 def generer_palette_web_safe():
     """Génère les 216 couleurs RGB de la palette Web Safe."""
@@ -31,7 +41,8 @@ def convertir_vers_web_safe(rgb):
 class MediaProcessor:
     """Analyseur de médias avec traitement asynchrone."""
     
-    def __init__(self, http_client: httpx.AsyncClient):
+    def __init__(self, db: AsyncSession, http_client: httpx.AsyncClient):
+        self.db = db
         self.http_client = http_client
         self.max_size = settings.MAX_FILE_SIZE_MB * 1024 * 1024
 
@@ -132,3 +143,55 @@ class MediaProcessor:
             if src:
                 urls.add(urljoin(base_url, src))
         return list(urls)
+
+    async def extract_dynamic_medias(self, url: str, expression: models.Expression):
+        """
+        Extract media URLs from a webpage using a headless browser.
+        """
+        if not PLAYWRIGHT_AVAILABLE:
+            print(f"Playwright not available, skipping dynamic media extraction for {url}")
+            return
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.set_extra_http_headers({"User-Agent": "MyWebIntelligence-Crawler/1.0"})
+            
+            try:
+                await page.goto(url, wait_until='networkidle', timeout=30000)
+                await page.wait_for_timeout(3000)
+
+                media_selectors = {
+                    'IMAGE': 'img[src]',
+                    'VIDEO': 'video[src], video source[src]',
+                    'AUDIO': 'audio[src], audio source[src]'
+                }
+                
+                for media_type, selector in media_selectors.items():
+                    elements = await page.query_selector_all(selector)
+                    for element in elements:
+                        src = await element.get_attribute('src')
+                        if src:
+                            resolved_url = urljoin(url, src)
+                            if not await crud_media.media_exists(self.db, expression_id=expression.id, url=resolved_url):
+                                await crud_media.create_media(self.db, expression_id=expression.id, media_data={'url': resolved_url, 'media_type': media_type})
+
+                lazy_img_selectors = [
+                    'img[data-src]', 'img[data-lazy-src]', 
+                    'img[data-original]', 'img[data-url]'
+                ]
+                
+                for selector in lazy_img_selectors:
+                    elements = await page.query_selector_all(selector)
+                    for element in elements:
+                        for attr in ['data-src', 'data-lazy-src', 'data-original', 'data-url']:
+                            src = await element.get_attribute(attr)
+                            if src:
+                                resolved_url = urljoin(url, src)
+                                if not await crud_media.media_exists(self.db, expression_id=expression.id, url=resolved_url):
+                                    await crud_media.create_media(self.db, expression_id=expression.id, media_data={'url': resolved_url, 'media_type': 'IMAGE'})
+                                break
+            except Exception as e:
+                print(f"Error during dynamic media extraction for {url}: {e}")
+            finally:
+                await browser.close()

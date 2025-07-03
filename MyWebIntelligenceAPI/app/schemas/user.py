@@ -11,7 +11,7 @@ class UserBase(BaseModel):
     username: str
     email: Optional[EmailStr] = None
     is_active: bool = True
-    is_admin: bool = False
+    is_superuser: bool = False
 
 # Schéma pour la création d'un utilisateur
 class UserCreate(UserBase):
