@@ -3,7 +3,7 @@ Configuration de base SQLAlchemy
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from typing import AsyncGenerator
 from app.config import settings
 

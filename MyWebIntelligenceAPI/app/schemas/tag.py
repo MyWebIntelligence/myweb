@@ -35,4 +35,4 @@ class Tag(TimeStampedSchema):
     children: List['Tag'] = []
 
 # Mise à jour de la référence avant
-Tag.update_forward_refs()
+Tag.model_rebuild()

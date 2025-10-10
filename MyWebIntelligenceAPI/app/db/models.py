@@ -98,7 +98,7 @@ class Land(Base):
     
     # Configuration du crawling
     start_urls = Column(JSON, nullable=True)  # Liste des URLs de départ
-    lang = Column(String(255), nullable=True) # Langues du projet (ex: "en,fr")
+    lang = Column(JSON, nullable=True) # Langues du projet (ex: "en,fr")
     crawl_depth = Column(Integer, default=3)
     crawl_limit = Column(Integer, default=1000)
     crawl_status = Column(Enum(CrawlStatus), default=CrawlStatus.PENDING)
@@ -497,6 +497,7 @@ class LandDictionary(Base):
     id = Column(Integer, primary_key=True, index=True)
     land_id = Column(Integer, ForeignKey("lands.id"), nullable=False)
     word_id = Column(Integer, ForeignKey("words.id"), nullable=False)
+    weight = Column(Float, default=1.0)
 
     __table_args__ = (
         UniqueConstraint('land_id', 'word_id', name='uq_land_word'),

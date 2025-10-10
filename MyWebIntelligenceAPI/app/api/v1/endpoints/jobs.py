@@ -18,41 +18,44 @@ async def get_job_status(job_id: str):
     if not task_result:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    status = task_result.status
-    result = task_result.result if task_result.ready() else None
+    task_status = task_result.status
+    
+    # Pour les jobs terminés, on récupère le résultat final
+    # Pour les jobs en cours, on récupère les infos de progression
+    result = task_result.result
 
-    if status == 'FAILURE':
+    if task_status == 'FAILURE':
         response = {
             "job_id": job_id,
-            "status": status,
+            "status": task_status,
             "progress": 0,
             "result": str(result),
             "error_message": str(task_result.traceback)
         }
-    elif status == 'PENDING':
+    elif task_status == 'PENDING':
         response = {
             "job_id": job_id,
-            "status": status,
+            "status": task_status,
             "progress": 0,
             "result": None,
             "error_message": None
         }
-    elif status == 'SUCCESS':
+    elif task_status == 'SUCCESS':
          response = {
             "job_id": job_id,
-            "status": status,
+            "status": task_status,
             "progress": 100,
             "result": result,
             "error_message": None
         }
-    else: # RUNNING or other states
+    else: # RUNNING, PROGRESS or other states
         progress = 0
         if result and isinstance(result, dict) and 'progress' in result:
             progress = result['progress']
         
         response = {
             "job_id": job_id,
-            "status": status,
+            "status": task_status,
             "progress": progress,
             "result": result,
             "error_message": None

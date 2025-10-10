@@ -35,3 +35,11 @@ class CrawlJobResponse(BaseModel):
 
     class Config:
         orm_mode = True
+
+# Schéma pour le statut d'un job Celery (utilisé par l'endpoint jobs)
+class JobStatus(BaseModel):
+    job_id: str
+    status: str
+    progress: int = 0
+    result: Optional[Any] = None
+    error_message: Optional[str] = None

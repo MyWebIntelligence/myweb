@@ -24,7 +24,7 @@ class CRUDUser:
             username=obj_in.username,
             email=obj_in.email,
             hashed_password=hashed_password,
-            is_superuser=obj_in.is_superuser
+            is_admin=getattr(obj_in, 'is_superuser', False)
         )
         db.add(db_user)
         await db.commit()

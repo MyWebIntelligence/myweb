@@ -8,23 +8,67 @@ import trafilatura
 
 def get_readable_content(html: str) -> Tuple[str, BeautifulSoup]:
     """
-    Extrait le contenu lisible d'un HTML en utilisant Trafilatura comme source principale
-    et BeautifulSoup comme fallback.
+    Extrait le contenu lisible d'un HTML avec stratégie de fallback en cascade:
+    1. Trafilatura (primary)
+    2. Smart extraction (content heuristics)
+    3. BeautifulSoup (fallback)
     """
     soup = BeautifulSoup(html, 'html.parser')
     
-    # Essai avec Trafilatura
-    readable_text = trafilatura.extract(html, include_comments=False, include_tables=False)
+    # Méthode 1: Trafilatura (preferred)
+    readable_text = trafilatura.extract(
+        html, 
+        include_comments=False, 
+        include_tables=True,
+        include_formatting=True,
+        favor_precision=True
+    )
     
-    if readable_text and len(readable_text) > 100:
+    if readable_text and len(readable_text) > 200:
         print("Readable content extracted with Trafilatura.")
         return readable_text, soup
+    
+    # Méthode 2: Smart extraction avec heuristiques
+    smart_content = _smart_content_extraction(soup)
+    if smart_content and len(smart_content) > 200:
+        print("Readable content extracted with smart heuristics.")
+        return smart_content, soup
 
-    # Fallback avec BeautifulSoup si Trafilatura échoue
-    print("Trafilatura failed, falling back to BeautifulSoup for readable content.")
+    # Méthode 3: BeautifulSoup fallback
+    print("Advanced methods failed, falling back to BeautifulSoup.")
     clean_html(soup)
-    text = soup.get_text(separator='\\n', strip=True)
+    text = soup.get_text(separator='\n', strip=True)
     return text, soup
+
+def _smart_content_extraction(soup: BeautifulSoup) -> Optional[str]:
+    """
+    Extraction intelligente basée sur les heuristiques de contenu principal.
+    Inspiré de la logique Mercury Parser du système ancien.
+    """
+    # Priorité aux sélecteurs de contenu communs
+    content_selectors = [
+        'article', '[role="main"]', 'main', '.content', '.post-content',
+        '.entry-content', '.article-content', '.post-body', '.story-body',
+        '#content', '#main-content', '.main-content', '.article-body'
+    ]
+    
+    for selector in content_selectors:
+        elements = soup.select(selector)
+        if elements:
+            # Prendre le plus grand élément trouvé
+            largest_element = max(elements, key=lambda x: len(x.get_text(strip=True)))
+            text_content = largest_element.get_text(separator='\n', strip=True)
+            if len(text_content) > 200:
+                return text_content
+    
+    # Fallback: chercher les paragraphes les plus substantiels
+    paragraphs = soup.find_all('p')
+    if paragraphs:
+        content_paragraphs = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 50]
+        if content_paragraphs:
+            return '\n\n'.join(content_paragraphs)
+    
+    return None
 
 def get_metadata(soup: BeautifulSoup, url: str) -> Dict[str, Any]:
     """

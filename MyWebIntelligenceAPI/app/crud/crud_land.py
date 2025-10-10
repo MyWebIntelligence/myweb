@@ -62,7 +62,7 @@ class CRUDLand:
             word = result.scalars().first()
             
             if not word:
-                word = Word(word=term, lemma=lemma, lang=land.lang)
+                word = Word(word=term, lemma=lemma)
                 db.add(word)
                 await db.commit()
                 await db.refresh(word)

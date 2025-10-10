@@ -4,6 +4,7 @@ Schémas Pydantic pour les Expressions
 
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 from .base import TimeStampedSchema
 
 # Schéma de base pour une Expression
@@ -27,6 +28,10 @@ class ExpressionUpdate(BaseModel):
     keywords: Optional[str] = None
     readable: Optional[str] = None
     relevance: Optional[float] = None
+    http_status: Optional[int] = None
+    lang: Optional[str] = None
+    crawled_at: Optional[datetime] = None
+    approved_at: Optional[datetime] = None
 
 # Schéma pour l'affichage d'une Expression
 class Expression(TimeStampedSchema):

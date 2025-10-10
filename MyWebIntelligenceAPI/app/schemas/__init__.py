@@ -12,5 +12,5 @@ from .expression import Expression, ExpressionCreate, ExpressionUpdate
 from .tag import Tag, TagCreate, TagUpdate
 from .tagged_content import TaggedContent, TaggedContentCreate, TaggedContentUpdate
 from .media import Media, MediaCreate, MediaUpdate
-from .job import CrawlJob, CrawlJobCreate, CrawlJobUpdate, CrawlOptions
+from .job import CrawlJobBase, CrawlJobCreate, CrawlJobResponse, CrawlRequest
 from .export import Export, ExportCreate, ExportUpdate

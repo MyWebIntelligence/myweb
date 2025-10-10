@@ -11,7 +11,10 @@ class CRUDJob:
     async def get(self, db: AsyncSession, job_id: int) -> Optional[models.CrawlJob]:
         """Récupère un job par son ID."""
         result = await db.execute(select(models.CrawlJob).filter(models.CrawlJob.id == job_id))
-        return result.scalar_one_or_none()
+        job_obj = result.scalar_one_or_none()
+        if job_obj:
+            await db.refresh(job_obj)
+        return job_obj
 
     async def create(self, db: AsyncSession, *, obj_in: CrawlJobCreate) -> models.CrawlJob:
         """Crée un nouveau job."""

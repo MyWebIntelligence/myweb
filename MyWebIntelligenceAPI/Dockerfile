@@ -25,6 +25,9 @@ COPY requirements.txt .
 # Installer les dépendances Python
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Installer les navigateurs Playwright
+RUN playwright install --with-deps
+
 # Copier le code de l'application
 COPY . .
 
