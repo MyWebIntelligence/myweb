@@ -14,11 +14,14 @@ Ces modèles représentent les entités principales :
 
 from sqlalchemy import (
     Column, Integer, String, Text, Float, DateTime, Boolean,
-    ForeignKey, Index, JSON, Enum, UniqueConstraint
+    ForeignKey, Index, JSON, Enum, UniqueConstraint, CheckConstraint,
+    event
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
+import hashlib
 
 from .base import Base
 
@@ -116,7 +119,7 @@ class Land(Base):
     expressions = relationship("Expression", back_populates="land", cascade="all, delete-orphan")
     domains = relationship("Domain", back_populates="land", cascade="all, delete-orphan")
     tags = relationship("Tag", back_populates="land", cascade="all, delete-orphan")
-    crawl_jobs = relationship("CrawlJob", back_populates="land")
+    crawl_jobs = relationship("CrawlJob", back_populates="land", cascade="all, delete-orphan")
     words = relationship(
         "Word",
         secondary="land_dictionaries",
@@ -146,6 +149,7 @@ class Domain(Base):
     title = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
     keywords = Column(Text, nullable=True)
+    http_status = Column(String(3), nullable=True, index=True)
     
     # Métadonnées techniques
     ip_address = Column(String(45), nullable=True)
@@ -157,6 +161,7 @@ class Domain(Base):
     avg_http_status = Column(Float, nullable=True)
     first_crawled = Column(DateTime(timezone=True), nullable=True)
     last_crawled = Column(DateTime(timezone=True), nullable=True)
+    fetched_at = Column(DateTime(timezone=True), nullable=True)
     
     # Analyse de contenu
     language = Column(String(10), nullable=True)
@@ -187,7 +192,8 @@ class Expression(Base):
     domain_id = Column(Integer, ForeignKey("domains.id"), nullable=False)
     
     # Informations de base
-    url = Column(Text, nullable=False, index=True)
+    url = Column(Text, nullable=False)
+    url_hash = Column(String(32), nullable=False, index=True)
     title = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
     keywords = Column(Text, nullable=True)
@@ -201,11 +207,13 @@ class Expression(Base):
     http_status = Column(Integer, nullable=True, index=True)
     crawled_at = Column(DateTime(timezone=True), nullable=True)
     readable_at = Column(DateTime(timezone=True), nullable=True)
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
     depth = Column(Integer, nullable=True, index=True)
     relevance = Column(Float, nullable=True, index=True)
     
     # Analyse de contenu
-    language = Column(String(10), nullable=True)
+    lang = Column("language", String(10), nullable=True)
     word_count = Column(Integer, nullable=True)
     reading_time = Column(Integer, nullable=True)  # En minutes
     
@@ -214,6 +222,9 @@ class Expression(Base):
     meta_description = Column(Text, nullable=True)
     meta_keywords = Column(Text, nullable=True)
     canonical_url = Column(Text, nullable=True)
+    valid_llm = Column("validllm", String(3), nullable=True)
+    valid_model = Column("validmodel", String(100), nullable=True)
+    seo_rank = Column("seorank", Text, nullable=True)
     
     # Headers HTTP
     content_type = Column(String(100), nullable=True)
@@ -234,6 +245,7 @@ class Expression(Base):
     domain = relationship("Domain", back_populates="expressions")
     media = relationship("Media", back_populates="expression", cascade="all, delete-orphan")
     tagged_content = relationship("TaggedContent", back_populates="expression", cascade="all, delete-orphan")
+    paragraphs = relationship("Paragraph", back_populates="expression", cascade="all, delete-orphan", order_by="Paragraph.position")
     
     # Liens sortants et entrants
     outgoing_links = relationship(
@@ -248,12 +260,166 @@ class Expression(Base):
         back_populates="target_expression"
     )
 
+    @property
+    def total_paragraphs(self) -> int:
+        """Nombre total de paragraphes."""
+        return len(self.paragraphs)
+
+    @property 
+    def paragraphs_with_embeddings(self) -> int:
+        """Nombre de paragraphes avec embeddings."""
+        return sum(1 for p in self.paragraphs if p.has_embedding)
+
+    @property
+    def embedding_coverage(self) -> float:
+        """Pourcentage de couverture des embeddings."""
+        if self.total_paragraphs == 0:
+            return 0.0
+        return (self.paragraphs_with_embeddings / self.total_paragraphs) * 100
+
     # Index
     __table_args__ = (
         Index('ix_expressions_land_status', 'land_id', 'http_status'),
         Index('ix_expressions_relevance_depth', 'relevance', 'depth'),
         Index('ix_expressions_crawled', 'crawled_at'),
-        Index('ix_expressions_url_hash', 'url'),  # Pour recherche rapide par URL
+    )
+
+    @staticmethod
+    def compute_url_hash(url: str) -> str:
+        """Retourne un hash stable pour les URLs (utilisé pour les index)."""
+        return hashlib.md5(url.encode("utf-8")).hexdigest() if url else ""
+
+
+class Paragraph(Base):
+    """
+    Modèle Paragraph - Paragraphes extraits des expressions pour embeddings
+    
+    Représente un paragraphe de texte extrait d'une expression,
+    avec ses embeddings et métadonnées linguistiques.
+    """
+    __tablename__ = "paragraphs"
+    
+    # Primary key et relations
+    id = Column(Integer, primary_key=True, index=True)
+    expression_id = Column(
+        Integer, 
+        ForeignKey("expressions.id", ondelete="CASCADE"), 
+        nullable=False,
+        index=True
+    )
+    
+    # Contenu textuel
+    text = Column(Text, nullable=False)
+    text_hash = Column(String(64), nullable=False, index=True)  # SHA256 pour déduplication
+    
+    # Métadonnées structurelles
+    position = Column(Integer, nullable=False, default=0)
+    word_count = Column(Integer)
+    char_count = Column(Integer)
+    sentence_count = Column(Integer)
+    
+    # Analyse linguistique
+    language = Column(String(10))  # ISO 639-1 code
+    reading_level = Column(Float)  # Flesch reading score
+    
+    # Embeddings
+    embedding = Column(ARRAY(Float))  # Ou VECTOR(1536) avec pgvector
+    embedding_provider = Column(String(50))
+    embedding_model = Column(String(100))
+    embedding_dimensions = Column(Integer)
+    embedding_computed_at = Column(DateTime(timezone=True))
+    
+    # Métadonnées temporelles
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relations
+    expression = relationship("Expression", back_populates="paragraphs")
+    similarities_as_source = relationship(
+        "Similarity", 
+        foreign_keys="Similarity.paragraph1_id",
+        back_populates="paragraph1",
+        cascade="all, delete-orphan"
+    )
+    similarities_as_target = relationship(
+        "Similarity", 
+        foreign_keys="Similarity.paragraph2_id", 
+        back_populates="paragraph2"
+    )
+    
+    @property
+    def has_embedding(self) -> bool:
+        """Vérifie si le paragraphe a un embedding."""
+        return (
+            self.embedding is not None 
+            and isinstance(self.embedding, list) 
+            and len(self.embedding) > 0
+        )
+    
+    @property
+    def preview_text(self) -> str:
+        """Retourne un aperçu du texte (100 premiers caractères)."""
+        text_value = getattr(self, 'text', '')
+        if not isinstance(text_value, str):
+            return ""
+        return text_value[:100] + "..." if len(text_value) > 100 else text_value
+    
+    def __repr__(self):
+        return f"<Paragraph(id={self.id}, expression_id={self.expression_id}, words={self.word_count})>"
+    
+    # Contraintes et index
+    __table_args__ = (
+        Index('ix_paragraphs_expression_position', 'expression_id', 'position'),
+        Index('ix_paragraphs_text_hash', 'text_hash'),
+        Index('ix_paragraphs_embedding_provider', 'embedding_provider'),
+        Index('ix_paragraphs_word_count', 'word_count'),
+        Index('ix_paragraphs_created_at', 'created_at'),
+        UniqueConstraint('expression_id', 'position', name='uq_paragraph_expression_position'),
+    )
+
+
+class Similarity(Base):
+    """
+    Modèle Similarity - Similarités calculées entre paragraphes
+    
+    Stocke les scores de similarité calculés entre paires de paragraphes
+    pour l'analyse sémantique et la recherche.
+    """
+    __tablename__ = "similarities"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    paragraph1_id = Column(
+        Integer, 
+        ForeignKey("paragraphs.id", ondelete="CASCADE"), 
+        nullable=False
+    )
+    paragraph2_id = Column(
+        Integer, 
+        ForeignKey("paragraphs.id", ondelete="CASCADE"), 
+        nullable=False
+    )
+    similarity_score = Column(
+        Float, 
+        nullable=False,
+        index=True
+    )
+    method = Column(String(50), nullable=False, default='cosine')
+    
+    # Métadonnées temporelles
+    computed_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relations
+    paragraph1 = relationship("Paragraph", foreign_keys=[paragraph1_id], back_populates="similarities_as_source")
+    paragraph2 = relationship("Paragraph", foreign_keys=[paragraph2_id], back_populates="similarities_as_target")
+    
+    # Contraintes et index
+    __table_args__ = (
+        Index('ix_similarities_score', 'similarity_score'),
+        Index('ix_similarities_method', 'method'),
+        Index('ix_similarities_computed_at', 'computed_at'),
+        UniqueConstraint('paragraph1_id', 'paragraph2_id', name='uq_similarity_paragraphs'),
+        CheckConstraint('similarity_score >= 0 AND similarity_score <= 1', name='check_similarity_score_range'),
+        CheckConstraint('paragraph1_id != paragraph2_id', name='check_no_self_similarity'),
     )
 
 
@@ -356,7 +522,8 @@ class Media(Base):
     expression_id = Column(Integer, ForeignKey("expressions.id"), nullable=False)
     
     # Informations de base
-    url = Column(Text, nullable=False, index=True)
+    url = Column(Text, nullable=False)
+    url_hash = Column(String(32), nullable=False, index=True)
     type = Column(Enum(MediaType), nullable=False, index=True)
     mime_type = Column(String(100), nullable=True)
     
@@ -364,15 +531,22 @@ class Media(Base):
     filename = Column(String(255), nullable=True)
     file_size = Column(Integer, nullable=True)
     file_path = Column(Text, nullable=True)  # Chemin local si téléchargé
+    format = Column(String(50), nullable=True)
+    color_mode = Column(String(50), nullable=True)
     
     # Métadonnées médias
     width = Column(Integer, nullable=True)
     height = Column(Integer, nullable=True)
     duration = Column(Float, nullable=True)  # Pour vidéos/audio (secondes)
+    has_transparency = Column(Boolean, nullable=True)
+    aspect_ratio = Column(Float, nullable=True)
     
     # Métadonnées EXIF/techniques
     exif_data = Column(JSON, nullable=True)
     color_palette = Column(JSON, nullable=True)  # Couleurs dominantes
+    dominant_colors = Column(JSON, nullable=True)
+    websafe_colors = Column(JSON, nullable=True)
+    image_hash = Column(String(128), nullable=True)
     
     # Contexte d'extraction
     alt_text = Column(Text, nullable=True)
@@ -390,6 +564,7 @@ class Media(Base):
     # Status de traitement
     is_processed = Column(Boolean, default=False)
     processing_error = Column(Text, nullable=True)
+    analysis_error = Column(Text, nullable=True)
 
     # Relations
     expression = relationship("Expression", back_populates="media")
@@ -397,9 +572,37 @@ class Media(Base):
     # Index
     __table_args__ = (
         Index('ix_media_expression_type', 'expression_id', 'type'),
-        Index('ix_media_url_hash', 'url'),
         Index('ix_media_processed', 'is_processed'),
     )
+
+    @staticmethod
+    def compute_url_hash(url: str) -> str:
+        """Retourne un hash stable pour les URLs médias."""
+        return hashlib.md5(url.encode("utf-8")).hexdigest() if url else ""
+
+
+@event.listens_for(Expression, "before_insert")
+def set_expression_url_hash(_, __, target: Expression):
+    if getattr(target, "url", None):
+        target.url_hash = Expression.compute_url_hash(target.url)
+
+
+@event.listens_for(Expression, "before_update")
+def update_expression_url_hash(_, __, target: Expression):
+    if getattr(target, "url", None):
+        target.url_hash = Expression.compute_url_hash(target.url)
+
+
+@event.listens_for(Media, "before_insert")
+def set_media_url_hash(_, __, target: Media):
+    if getattr(target, "url", None):
+        target.url_hash = Media.compute_url_hash(target.url)
+
+
+@event.listens_for(Media, "before_update")
+def update_media_url_hash(_, __, target: Media):
+    if getattr(target, "url", None):
+        target.url_hash = Media.compute_url_hash(target.url)
 
 
 class ExpressionLink(Base):
@@ -489,6 +692,8 @@ class Word(Base):
     id = Column(Integer, primary_key=True, index=True)
     word = Column(String(255), unique=True, nullable=False, index=True)
     lemma = Column(String(255), nullable=False, index=True)
+    language = Column(String(10), nullable=False, default="fr")
+    frequency = Column(Float, nullable=False, default=1.0)
 
 class LandDictionary(Base):
     """Table de liaison pour les dictionnaires de lands"""

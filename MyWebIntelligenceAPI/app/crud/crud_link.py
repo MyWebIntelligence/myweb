@@ -8,11 +8,20 @@ from typing import Optional
 from app.db import models
 
 class CRUDExpressionLink:
-    async def create_link(self, db: AsyncSession, source_id: int, target_id: int) -> Optional[models.ExpressionLink]:
+    async def create_link(self, db: AsyncSession, source_id: int, target_id: int, 
+                         anchor_text: Optional[str] = None, link_type: Optional[str] = None,
+                         rel_attribute: Optional[str] = None, position: Optional[int] = None) -> Optional[models.ExpressionLink]:
         """
-        Crée un lien entre deux expressions.
+        Crée un lien entre deux expressions avec métadonnées.
         """
-        link = models.ExpressionLink(source_id=source_id, target_id=target_id)
+        link = models.ExpressionLink(
+            source_id=source_id, 
+            target_id=target_id,
+            anchor_text=anchor_text,
+            link_type=link_type,
+            rel_attribute=rel_attribute,
+            position=position
+        )
         try:
             db.add(link)
             await db.commit()

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     # Configuration Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+    CELERY_AUTOSCALE: Optional[str] = None
     
     # Configuration JWT
     JWT_SECRET_KEY: str = "your-secret-key-change-in-production"
@@ -46,11 +47,20 @@ class Settings(BaseSettings):
     API_KEY_HEADER: str = "X-API-Key"
     RATE_LIMIT_PER_MINUTE: int = 60
     
+    # Configuration embeddings
+    EMBEDDINGS_ENABLED: bool = True
+    EMBEDDINGS_DEFAULT_PROVIDER: str = "openai"
+    EMBEDDINGS_ALLOW_EXTERNAL_PROVIDERS: bool = True
+    EMBEDDINGS_REQUIRE_USER_CONFIRMATION: bool = True
+    EMBEDDINGS_PROVIDER_CONFIG: Optional[str] = None
+    EMBEDDINGS_PROVIDER_CONFIG_FILE: Optional[str] = None
+    
     # Configuration crawling
     DEFAULT_CRAWL_DEPTH: int = 3
     MAX_CRAWL_DEPTH: int = 10
     DEFAULT_CRAWL_LIMIT: int = 1000
     MAX_CRAWL_LIMIT: int = 10000
+    CRAWL_BATCH_SIZE: int = 10
     
     # Configuration des médias
     MEDIA_STORAGE_PATH: str = "./media"
@@ -59,6 +69,8 @@ class Settings(BaseSettings):
     ALLOWED_VIDEO_TYPES: List[str] = ["mp4", "webm", "avi", "mov"]
     ANALYZE_MEDIA: bool = True
     N_DOMINANT_COLORS: int = 5
+    PLAYWRIGHT_TIMEOUT_MS: int = 7000
+    PLAYWRIGHT_MAX_RETRIES: int = 1
     
     # Configuration export
     EXPORT_STORAGE_PATH: str = "./exports"
@@ -78,6 +90,13 @@ class Settings(BaseSettings):
     SMTP_USERNAME: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
     FROM_EMAIL: Optional[str] = None
+    
+    # Configuration OpenRouter (pour validation LLM)
+    OPENROUTER_ENABLED: bool = False
+    OPENROUTER_API_KEY: Optional[str] = None
+    OPENROUTER_MODEL: str = "anthropic/claude-3.5-sonnet"
+    OPENROUTER_TIMEOUT: int = 30
+    OPENROUTER_MAX_RETRIES: int = 3
     
     def create_directories(self):
         """Créer les répertoires nécessaires s'ils n'existent pas"""

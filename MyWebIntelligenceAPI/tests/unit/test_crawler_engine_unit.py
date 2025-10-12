@@ -204,15 +204,20 @@ class TestCrawlerEngine:
         
         expressions = [mock_expr1, mock_expr2]
         
-        with patch('app.crud.crud_expression.expression.get_expressions_to_crawl') as mock_get_expressions, \
+        mock_land = MagicMock()
+        mock_land.start_urls = []
+
+        with patch('app.crud.crud_land.land.get', AsyncMock(return_value=mock_land)), \
+             patch('app.crud.crud_expression.expression.get_expressions_to_crawl') as mock_get_expressions, \
              patch.object(self.crawler, 'crawl_expression') as mock_crawl_expr:
             
             mock_get_expressions.return_value = expressions
+            self.mock_db.get = AsyncMock(side_effect=[mock_expr1, mock_expr2])
             mock_crawl_expr.return_value = None  # Crawl réussi
             self.crawler.http_client.aclose = AsyncMock()
             
             # Execute
-            processed, errors = await self.crawler.crawl_land(land_id=1, limit=10)
+            processed, errors, http_stats = await self.crawler.crawl_land(land_id=1, limit=10)
             
             # Verify
             mock_get_expressions.assert_called_once_with(
@@ -221,6 +226,7 @@ class TestCrawlerEngine:
             assert mock_crawl_expr.call_count == 2
             assert processed == 2
             assert errors == 0
+            assert http_stats == {}
             self.crawler.http_client.aclose.assert_called_once()
     
     async def test_crawl_land_with_errors(self):
@@ -236,31 +242,42 @@ class TestCrawlerEngine:
         
         expressions = [mock_expr1, mock_expr2]
         
-        with patch('app.crud.crud_expression.expression.get_expressions_to_crawl') as mock_get_expressions, \
+        mock_land = MagicMock()
+        mock_land.start_urls = []
+
+        with patch('app.crud.crud_land.land.get', AsyncMock(return_value=mock_land)), \
+             patch('app.crud.crud_expression.expression.get_expressions_to_crawl') as mock_get_expressions, \
              patch.object(self.crawler, 'crawl_expression') as mock_crawl_expr:
             
             mock_get_expressions.return_value = expressions
+            self.mock_db.get = AsyncMock(side_effect=[mock_expr1, mock_expr2])
             # Premier crawl réussit, deuxième échoue
             mock_crawl_expr.side_effect = [None, Exception("Network error")]
             self.crawler.http_client.aclose = AsyncMock()
             
             # Execute
-            processed, errors = await self.crawler.crawl_land(land_id=1)
+            processed, errors, http_stats = await self.crawler.crawl_land(land_id=1)
             
             # Verify
             assert mock_crawl_expr.call_count == 2
             assert processed == 1
             assert errors == 1
+            assert http_stats.get('error') == 1
     
     async def test_crawl_land_with_parameters(self):
         """Test crawl d'un land avec paramètres spécifiques"""
-        with patch('app.crud.crud_expression.expression.get_expressions_to_crawl') as mock_get_expressions, \
+        mock_land = MagicMock()
+        mock_land.start_urls = []
+
+        with patch('app.crud.crud_land.land.get', AsyncMock(return_value=mock_land)), \
+             patch('app.crud.crud_expression.expression.get_expressions_to_crawl') as mock_get_expressions, \
              patch.object(self.crawler, 'crawl_expression'):
             
             mock_get_expressions.return_value = []
+            self.mock_db.get = AsyncMock(return_value=None)
             
             # Execute avec paramètres
-            await self.crawler.crawl_land(
+            processed, errors, http_stats = await self.crawler.crawl_land(
                 land_id=1, 
                 limit=50, 
                 depth=3, 
@@ -275,6 +292,9 @@ class TestCrawlerEngine:
                 depth=3, 
                 http_status="404"
             )
+            assert processed == 0
+            assert errors == 0
+            assert http_stats == {}
     
     async def test_crawl_expression_with_special_characters(self):
         """Test crawl d'une URL avec caractères spéciaux"""

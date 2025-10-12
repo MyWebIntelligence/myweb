@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy
 
 # Définir le répertoire de travail
 WORKDIR /app
@@ -25,14 +25,17 @@ COPY requirements.txt .
 # Installer les dépendances Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Installer les navigateurs Playwright
-RUN playwright install --with-deps
-
 # Copier le code de l'application
 COPY . .
 
 # Créer les répertoires nécessaires
 RUN mkdir -p /data/uploads /data/exports /data/media
+
+# L'image Playwright fournit déjà l'utilisateur non-root `pwuser`
+RUN chown -R pwuser:pwuser /app /data
+
+# Utiliser l'utilisateur non-root par défaut
+USER pwuser
 
 # Exposer le port
 EXPOSE 8000

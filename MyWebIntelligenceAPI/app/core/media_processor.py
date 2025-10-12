@@ -5,7 +5,7 @@ Analyse les images pour en extraire les métadonnées, les couleurs dominantes, 
 import io
 import hashlib
 from typing import Dict, Any, Optional, List
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse
 import httpx
 import numpy as np
 from PIL import Image, UnidentifiedImageError
@@ -53,12 +53,13 @@ class MediaProcessor:
             'error': None, 'width': None, 'height': None, 'format': None,
             'file_size': None, 'color_mode': None, 'has_transparency': False,
             'aspect_ratio': None, 'exif_data': None, 'image_hash': None,
-            'dominant_colors': [], 'websafe_colors': {}
+            'dominant_colors': [], 'websafe_colors': {}, 'mime_type': None
         }
 
         try:
             response = await self.http_client.get(url, timeout=30)
             response.raise_for_status()
+            result['mime_type'] = response.headers.get('Content-Type')
             
             content = await response.aread()
             if len(content) > self.max_size:
@@ -134,14 +135,70 @@ class MediaProcessor:
             if not result.get('error'):
                 result['error'] = f"EXIF error: {str(e)}"
 
+    def _clean_media_url(self, url: str, base_url: str) -> Optional[str]:
+        """Nettoie et valide une URL de média."""
+        try:
+            # Résoudre l'URL relative
+            full_url = urljoin(base_url, url)
+            parsed = urlparse(full_url)
+            
+            # Validation de base
+            if not parsed.scheme in ['http', 'https']:
+                return None
+            if not parsed.netloc:
+                return None
+            
+            # Skip data URLs et autres schemes problématiques
+            if parsed.scheme.startswith('data'):
+                return None
+            
+            # Nettoyer les proxies WordPress problématiques
+            if parsed.netloc.startswith('i0.wp.com') or parsed.netloc.startswith('i1.wp.com') or parsed.netloc.startswith('i2.wp.com'):
+                # Extraire l'URL originale depuis le proxy WP
+                # Format: i0.wp.com/original-domain.com/path?params
+                path_parts = parsed.path.split('/', 2)
+                if len(path_parts) >= 3:
+                    original_domain = path_parts[1]
+                    original_path = '/' + path_parts[2]
+                    
+                    # Reconstruire l'URL sans le proxy
+                    clean_url = urlunparse((
+                        'https',
+                        original_domain,
+                        original_path,
+                        parsed.params,
+                        parsed.query.replace('ssl=1', '').strip('&'),
+                        parsed.fragment
+                    ))
+                    return clean_url
+            
+            return full_url
+            
+        except Exception:
+            return None
+
     def extract_media_urls(self, soup: BeautifulSoup, base_url: str) -> List[str]:
         """Extrait les URLs des médias d'un objet BeautifulSoup."""
         urls = set()
         media_tags = soup.find_all(['img', 'video', 'audio'])
         for tag in media_tags:
-            src = tag.get('src')
+            # Essayer plusieurs attributs sources
+            src = tag.get('src') or tag.get('data-src') or tag.get('data-original')
             if src:
-                urls.add(urljoin(base_url, src))
+                clean_url = self._clean_media_url(src, base_url)
+                if clean_url:
+                    urls.add(clean_url)
+                    
+            # Traiter srcset pour les images responsives
+            srcset = tag.get('srcset')
+            if srcset:
+                for srcset_item in srcset.split(','):
+                    src_part = srcset_item.strip().split(' ')[0]
+                    if src_part:
+                        clean_url = self._clean_media_url(src_part, base_url)
+                        if clean_url:
+                            urls.add(clean_url)
+                            
         return list(urls)
 
     async def extract_dynamic_medias(self, url: str, expression: models.Expression):
@@ -163,41 +220,67 @@ class MediaProcessor:
             page = await browser.new_page()
             await page.set_extra_http_headers({"User-Agent": "MyWebIntelligence-Crawler/1.0"})
             
+            max_retries = max(1, getattr(settings, "PLAYWRIGHT_MAX_RETRIES", 1))
+            timeout_ms = getattr(settings, "PLAYWRIGHT_TIMEOUT_MS", 7000)
+            
             try:
-                await page.goto(url, wait_until='networkidle', timeout=30000)
-                await page.wait_for_timeout(3000)
+                for attempt in range(max_retries):
+                    try:
+                        await page.goto(url, wait_until='networkidle', timeout=timeout_ms)
+                        await page.wait_for_timeout(3000)
 
-                media_selectors = {
-                    'IMAGE': 'img[src]',
-                    'VIDEO': 'video[src], video source[src]',
-                    'AUDIO': 'audio[src], audio source[src]'
-                }
-                
-                for media_type, selector in media_selectors.items():
-                    elements = await page.query_selector_all(selector)
-                    for element in elements:
-                        src = await element.get_attribute('src')
-                        if src:
-                            resolved_url = urljoin(url, src)
-                            if not await crud_media.media_exists(self.db, expression_id=expression.id, url=resolved_url):
-                                await crud_media.create_media(self.db, expression_id=expression.id, media_data={'url': resolved_url, 'media_type': media_type})
+                        media_selectors = {
+                            'IMAGE': 'img[src]',
+                            'VIDEO': 'video[src], video source[src]',
+                            'AUDIO': 'audio[src], audio source[src]'
+                        }
+                        media_type_map = {
+                            'IMAGE': models.MediaType.IMAGE,
+                            'VIDEO': models.MediaType.VIDEO,
+                            'AUDIO': models.MediaType.AUDIO,
+                        }
 
-                lazy_img_selectors = [
-                    'img[data-src]', 'img[data-lazy-src]', 
-                    'img[data-original]', 'img[data-url]'
-                ]
-                
-                for selector in lazy_img_selectors:
-                    elements = await page.query_selector_all(selector)
-                    for element in elements:
-                        for attr in ['data-src', 'data-lazy-src', 'data-original', 'data-url']:
-                            src = await element.get_attribute(attr)
-                            if src:
+                        for media_type, selector in media_selectors.items():
+                            elements = await page.query_selector_all(selector)
+                            for element in elements:
+                                src = await element.get_attribute('src')
+                                if not src or src.startswith('data:'):
+                                    continue
                                 resolved_url = urljoin(url, src)
-                                if not await crud_media.media_exists(self.db, expression_id=expression.id, url=resolved_url):
-                                    await crud_media.create_media(self.db, expression_id=expression.id, media_data={'url': resolved_url, 'media_type': 'IMAGE'})
-                                break
-            except Exception as e:
-                print(f"Error during dynamic media extraction for {url}: {e}")
+                                if not await crud_media.media.media_exists(self.db, expression_id=expression.id, url=resolved_url):
+                                    await crud_media.media.create_media(
+                                        self.db,
+                                        expression_id=expression.id,
+                                        media_data={'url': resolved_url, 'type': media_type_map.get(media_type, models.MediaType.IMAGE)},
+                                    )
+
+                        lazy_img_selectors = [
+                            'img[data-src]', 'img[data-lazy-src]',
+                            'img[data-original]', 'img[data-url]'
+                        ]
+
+                        for selector in lazy_img_selectors:
+                            elements = await page.query_selector_all(selector)
+                            for element in elements:
+                                for attr in ['data-src', 'data-lazy-src', 'data-original', 'data-url']:
+                                    src = await element.get_attribute(attr)
+                                    if not src or src.startswith('data:'):
+                                        continue
+                                    resolved_url = urljoin(url, src)
+                                    if not await crud_media.media.media_exists(self.db, expression_id=expression.id, url=resolved_url):
+                                        await crud_media.media.create_media(
+                                            self.db,
+                                            expression_id=expression.id,
+                                            media_data={'url': resolved_url, 'type': models.MediaType.IMAGE},
+                                        )
+                                    break
+                        break
+                    except Exception as e:
+                        if attempt >= max_retries - 1:
+                            print(f"Error during dynamic media extraction for {url}: {e}")
+                        else:
+                            await page.wait_for_timeout(250)
+                            continue
             finally:
+                await page.close()
                 await browser.close()

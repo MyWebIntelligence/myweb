@@ -22,7 +22,7 @@ async def login_for_access_token(
     """
     Obtenir un token d'accès et de rafraîchissement.
     """
-    user = await crud_user.get_user_by_username(db, username=form_data.username)
+    user = await crud_user.user.get_by_username(db, username=form_data.username)
     if not user or not security.verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

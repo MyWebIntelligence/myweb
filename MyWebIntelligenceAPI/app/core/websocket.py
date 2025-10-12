@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Dict, Set
 
 class WebSocketManager:
@@ -20,5 +21,16 @@ class WebSocketManager:
         if channel in self.active_connections:
             for websocket in self.active_connections[channel]:
                 await websocket.send_text(message)
+    
+    async def send_crawl_progress(self, channel: str, processed: int, total: int, message: str):
+        """Send crawl progress update to WebSocket channel"""
+        progress_data = {
+            "type": "crawl_progress",
+            "processed": processed,
+            "total": total,
+            "progress_percent": (processed / total * 100) if total > 0 else 0,
+            "message": message
+        }
+        await self.broadcast(channel, json.dumps(progress_data))
 
 websocket_manager = WebSocketManager()

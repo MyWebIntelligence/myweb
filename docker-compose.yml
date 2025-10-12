@@ -1,122 +1,66 @@
 services:
-  postgres:
-    image: postgres:15-alpine
-    volumes:
-      - postgres_data:/var/lib/postgresql/data/
-    ports:
-      - "5432:5432"
+  db:
+    image: postgres:15
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: mywebintelligence
-    networks:
-      - webintelligence
+      POSTGRES_USER: mwi_user
+      POSTGRES_PASSWORD: mwi_password
+      POSTGRES_DB: mwi_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mwi_user -d mwi_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    networks:
-      - webintelligence
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
 
   mywebintelligenceapi:
     build:
       context: ./MyWebIntelligenceAPI
       dockerfile: Dockerfile
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    volumes:
-      - ./MyWebIntelligenceAPI:/app
+    container_name: mywebintelligenceapi
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     ports:
       - "8000:8000"
-    env_file:
-      - ./.env
-    depends_on:
-      - postgres
-      - redis
-    networks:
-      - webintelligence
-
-  mywebclient:
-    build:
-      context: ./MyWebClient
-      dockerfile: Dockerfile
-    command: yarn standalone
-    volumes:
-      - ./MyWebClient:/app
-      - /app/node_modules
-    ports:
-      - "3002:3001"
-    env_file:
-      - ./MyWebClient/.env
     environment:
-      - NODE_ENV=development
-    depends_on:
-      - mywebintelligenceapi
-    networks:
-      - webintelligence
+      DATABASE_URL: postgresql+asyncpg://mwi_user:mwi_password@db:5432/mwi_db
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CELERY_AUTOSCALE: ${CELERY_AUTOSCALE:-}
+    volumes:
+      - ./MyWebIntelligenceAPI:/app
+    command: >
+      sh -c "cd /app &&
+             alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
   celery_worker:
     build:
       context: ./MyWebIntelligenceAPI
       dockerfile: Dockerfile
-    command: celery -A app.core.celery_app worker --loglevel=info
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mwi_user:mwi_password@db:5432/mwi_db
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CELERY_AUTOSCALE: ${CELERY_AUTOSCALE:-}
     volumes:
       - ./MyWebIntelligenceAPI:/app
-    env_file:
-      - ./.env
-    depends_on:
-      - redis
-      - postgres
-    networks:
-      - webintelligence
-
-  flower:
-    build:
-      context: ./MyWebIntelligenceAPI
-      dockerfile: Dockerfile
-    command: celery -A app.core.celery_app flower --port=5555
-    ports:
-      - "5555:5555"
-    env_file:
-      - ./.env
-    depends_on:
-      - redis
-      - celery_worker
-    networks:
-      - webintelligence
-
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./MyWebIntelligenceAPI/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-    networks:
-      - webintelligence
-
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3001:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-    networks:
-      - webintelligence
-    depends_on:
-      - prometheus
-
-networks:
-  webintelligence:
-    driver: bridge
+    command: >
+      sh -c "cd /app &&
+             alembic upgrade head &&
+             celery -A app.core.celery_app worker --loglevel=info"
 
 volumes:
   postgres_data:
-  prometheus_data:
-  grafana_data:

@@ -37,7 +37,7 @@ async def export_csv(
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
     
-    if land.user_id != current_user.id:
+    if land.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Validate CSV export type
@@ -80,7 +80,7 @@ async def export_gexf(
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
     
-    if land.user_id != current_user.id:
+    if land.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Validate GEXF export type
@@ -123,7 +123,7 @@ async def export_corpus(
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
     
-    if land.user_id != current_user.id:
+    if land.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Force export type to corpus
@@ -251,7 +251,7 @@ async def export_direct(
     if not land:
         raise HTTPException(status_code=404, detail="Land not found")
     
-    if land.user_id != current_user.id:
+    if land.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Validate export type

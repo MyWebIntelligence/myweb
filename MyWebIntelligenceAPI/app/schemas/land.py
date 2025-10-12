@@ -1,8 +1,7 @@
-"""
-Schémas Pydantic pour les Lands (projets de crawling)
-"""
+"""Schémas Pydantic pour les Lands (projets de crawling)."""
 
-from pydantic import BaseModel, field_validator
+import json
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List, Any
 from datetime import datetime
 from .base import TimeStampedSchema
@@ -38,8 +37,7 @@ class WordInDict(BaseModel):
     word: str
     lemma: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Schéma pour l'affichage d'un Land (enrichi avec le dictionnaire)
 class Land(TimeStampedSchema):
@@ -48,19 +46,24 @@ class Land(TimeStampedSchema):
     name: str
     description: Optional[str] = None
     lang: List[str]
+    start_urls: List[str] = Field(default_factory=list)
     crawl_status: CrawlStatus
     total_expressions: int
     total_domains: int
     last_crawl: Optional[datetime] = None
-    words: List[WordInDict] = []
-
-    class Config:
-        from_attributes = True
+    words: List[WordInDict] = Field(default_factory=list)
 
     @field_validator("lang", mode="before")
     @classmethod
     def split_lang_string(cls, v: Any) -> List[str]:
         if isinstance(v, str):
+            if v.strip().startswith("["):
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed if str(item).strip()]
+                except json.JSONDecodeError:
+                    pass
             return [lang.strip() for lang in v.split(',') if lang.strip()]
         if v is None:
             return []

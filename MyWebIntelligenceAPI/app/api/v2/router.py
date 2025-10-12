@@ -8,7 +8,7 @@ from typing import Dict, Any
 from app.api.versioning import get_api_version_from_request, BREAKING_CHANGES
 
 # Import des endpoints v2
-from .endpoints import lands_v2, export_v2
+from .endpoints import lands_v2, export_v2, paragraphs
 from app.api import deprecation
 
 # Routeur principal v2
@@ -17,6 +17,7 @@ api_router = APIRouter()
 # Inclusion des endpoints v2
 api_router.include_router(lands_v2.router, prefix="/lands", tags=["lands-v2"])
 api_router.include_router(export_v2.router, prefix="/export", tags=["export-v2"])
+api_router.include_router(paragraphs.router, prefix="/paragraphs", tags=["paragraphs-v2"])
 api_router.include_router(deprecation.router, prefix="/deprecation", tags=["deprecation"])
 
 # Endpoint d'info pour la v2
@@ -66,6 +67,7 @@ async def v2_info(request: Request) -> Dict[str, Any]:
         "endpoints": {
             "lands": "Gestion des projets de crawling avec pagination améliorée",
             "export": "Export asynchrone avec job tracking et nouveaux formats",
+            "paragraphs": "Gestion des paragraphes et embeddings pour l'analyse sémantique",
             "jobs": "Suivi avancé des tâches avec métriques détaillées",
             "auth": "Authentification renforcée (héritée de v1)",
             "websocket": "WebSocket améliorée pour notifications temps réel"

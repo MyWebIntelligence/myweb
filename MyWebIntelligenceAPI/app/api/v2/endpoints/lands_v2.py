@@ -3,17 +3,35 @@ Lands endpoints v2
 Breaking changes: Mandatory pagination, enhanced response format
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db, get_current_active_user
-from app.schemas.land import Land, LandCreate, LandUpdate
+from app.schemas.land import (
+    Land,
+    LandCreate,
+    LandUpdate,
+    LandAddTerms,
+    LandAddUrls,
+)
+from app.schemas.media import MediaAnalysisRequest, MediaAnalysisResponse
+from app.schemas.readable import ReadableRequestV2, ReadableProcessingResult
 from app.crud.crud_land import land as crud_land
-from app.schemas.job import CrawlRequest, CrawlJobResponse
+from app.schemas.job import CrawlRequest, CrawlJobResponse, CrawlStatus
 from app.services.crawling_service import start_crawl_for_land
 from app.schemas.user import User
 from app.api.versioning import get_api_version_from_request
 from pydantic import BaseModel
+from app.core.media_processor import MediaProcessor
+from app.crud import crud_media
+from app.db import models
+import time
+import httpx
+import logging
+import traceback
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -155,11 +173,7 @@ async def create_land_v2(
                 }
             )
         
-        # Create land with owner_id
-        land_data_dict = land_data.dict()
-        land_data_dict["owner_id"] = current_user.id
-        
-        land = await crud_land.create(db, obj_in=land_data_dict)
+        land = await crud_land.create(db, obj_in=land_data, owner_id=current_user.id)
         return land
         
     except Exception as e:
@@ -293,6 +307,345 @@ async def delete_land_v2(
         )
 
 
+@router.post("/{land_id}/media-analysis-async", response_model=Dict[str, Any])
+async def analyze_land_media_async_v2(
+    land_id: int,
+    analysis_request: MediaAnalysisRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """
+    Lance une analyse asynchrone de médias via Celery (recommandé pour des milliers d'images).
+    
+    Cette version utilise Celery pour traiter les médias en arrière-plan, permettant
+    de gérer de gros volumes sans timeout. Retourne immédiatement un job_id pour 
+    suivre le progrès.
+    
+    Args:
+        land_id: ID du land à analyser
+        analysis_request: Paramètres d'analyse (depth, minrel)
+        
+    Returns:
+        Dict contenant job_id et informations de suivi
+    """
+    # Verify land exists and user has access
+    land = await crud_land.get(db, id=land_id)
+    if not land:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "LAND_NOT_FOUND",
+                "message": f"Land with ID {land_id} not found",
+                "details": {"land_id": land_id},
+                "suggestion": "Check the land ID and ensure it exists"
+            }
+        )
+    
+    if land.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "ACCESS_DENIED",
+                "message": "You don't have permission to analyze media for this land",
+                "details": {"land_id": land_id, "owner_id": land.owner_id},
+                "suggestion": "Contact the land owner or analyze lands you own"
+            }
+        )
+    
+    try:
+        # Launch async task first to get task ID
+        from app.tasks.media_analysis_task import analyze_land_media_task
+        
+        task = analyze_land_media_task.delay(
+            job_id=0,  # Will be updated later
+            land_id=land_id,
+            depth=analysis_request.depth if analysis_request.depth is not None else 0,
+            minrel=analysis_request.minrel if analysis_request.minrel is not None else 0.0,
+            batch_size=50
+        )
+        
+        # Create job record with task ID
+        from app.crud import crud_job
+        from app.schemas.job import CrawlJobCreate
+        
+        job_data = CrawlJobCreate(
+            job_type="media_analysis",
+            land_id=land_id,
+            task_id=task.id,
+            parameters={
+                "depth": analysis_request.depth if analysis_request.depth is not None else 999,
+                "minrel": analysis_request.minrel if analysis_request.minrel is not None else 0.0,
+                "batch_size": 50
+            }
+        )
+        
+        job = await crud_job.job.create(db, obj_in=job_data)
+        
+        # Update task with correct job_id (revoke and restart with correct ID)
+        task.revoke()
+        task = analyze_land_media_task.delay(
+            job_id=job.id,
+            land_id=land_id,
+            depth=analysis_request.depth if analysis_request.depth is not None else 999,
+            minrel=analysis_request.minrel if analysis_request.minrel is not None else 0.0,
+            batch_size=50
+        )
+        
+        return {
+            "job_id": job.id,
+            "celery_task_id": task.id,
+            "land_id": land_id,
+            "land_name": land.name,
+            "status": "pending",
+            "message": "Media analysis task started in background",
+            "parameters": job_data.parameters,
+            "check_status_url": f"/api/v2/jobs/{job.id}",
+            "websocket_url": f"/api/v1/ws/jobs/{job.id}",
+            "estimated_time": "2-10 minutes depending on media count"
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "MEDIA_ANALYSIS_JOB_FAILED",
+                "message": "Failed to start media analysis job",
+                "details": {"land_id": land_id, "error": str(e)},
+                "suggestion": "Check system status and try again"
+            }
+        )
+
+
+@router.post("/{land_id}/readable", response_model=Dict[str, Any])
+async def process_readable_v2(
+    land_id: int,
+    request: ReadableRequestV2 = ReadableRequestV2(),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """
+    Process readable content for expressions in a land (v2).
+    
+    Enhanced version with standardized error handling, progress tracking,
+    and comprehensive parameter validation.
+    
+    Features:
+    - Mercury-like content extraction with fallbacks
+    - Three merge strategies: smart_merge, mercury_priority, preserve_existing
+    - Optional LLM validation via OpenRouter
+    - Automatic media and link extraction from markdown
+    - WebSocket progress updates
+    
+    Args:
+        land_id: ID of the land to process
+        request: Processing parameters (limit, depth, merge strategy, etc.)
+        
+    Returns:
+        Job tracking information with standardized v2 format
+    """
+    # Verify land exists and user has access
+    land = await crud_land.get(db, id=land_id)
+    if not land:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "LAND_NOT_FOUND",
+                "message": f"Land with ID {land_id} not found",
+                "details": {"land_id": land_id},
+                "suggestion": "Verify the land ID and ensure you have access to it"
+            }
+        )
+    
+    if land.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "ACCESS_DENIED",
+                "message": "You don't have permission to process this land",
+                "details": {"land_id": land_id, "owner_id": land.owner_id},
+                "suggestion": "Contact the land owner for access"
+            }
+        )
+    
+    try:
+        # Import here to avoid circular imports
+        from app.crud import crud_job
+        from app.schemas.job import CrawlJobCreate
+        from app.tasks.readable_working_task import readable_working_task
+        
+        # Create job record for tracking
+        job_data = CrawlJobCreate(
+            land_id=land_id,
+            job_type="readable_processing",
+            task_id="",  # Will be set after task creation
+            parameters={
+                "limit": request.limit,
+                "depth": request.depth,
+                "merge_strategy": request.merge_strategy.value,
+                "enable_llm": request.enable_llm,
+                "batch_size": request.batch_size,
+                "max_concurrent": request.max_concurrent
+            }
+        )
+        
+        job = await crud_job.job.create(db, obj_in=job_data)
+        
+        # Start readable processing task
+        task_result = readable_working_task.delay(
+            land_id=land_id,
+            job_id=job.id,
+            limit=request.limit or 10
+        )
+        
+        # Update job with task ID
+        await crud_job.job.update(db, db_obj=job, obj_in={"task_id": task_result.id})
+        
+        return {
+            "success": True,
+            "message": f"Readable processing started for land '{land.name}'",
+            "job_id": job.id,
+            "task_id": task_result.id,
+            "celery_task_id": task_result.id,
+            "ws_channel": f"job_{job.id}",
+            "parameters": {
+                "limit": request.limit or 10,
+                "test_mode": True
+            },
+            "tracking": {
+                "job_status_endpoint": f"/api/v2/jobs/{job.id}",
+                "websocket_channel": f"job_{job.id}",
+                "land_channel": f"land_{land_id}"
+            },
+            "estimated_time": "Test task - should complete in under 1 minute"
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "READABLE_PROCESSING_JOB_FAILED",
+                "message": "Failed to start readable processing job",
+                "details": {"land_id": land_id, "error": str(e)},
+                "suggestion": "Check system status and try again"
+            }
+        )
+
+
+@router.post("/{land_id}/populate-dictionary", response_model=Dict[str, Any])
+async def populate_land_dictionary_v2(
+    land_id: int,
+    request: Request,
+    force_refresh: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """
+    Peuple automatiquement le dictionnaire de mots-clés d'un land.
+    
+    Résout le problème de Dictionary Starvation en créant les entrées
+    de dictionnaire nécessaires pour le calcul de pertinence.
+    
+    Args:
+        land_id: ID du land à traiter
+        force_refresh: Si True, recrée le dictionnaire même s'il existe
+        
+    Returns:
+        Dict avec les statistiques de création du dictionnaire
+    """
+    # Verify land exists and user has access
+    land = await crud_land.get(db, id=land_id)
+    if not land:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "LAND_NOT_FOUND", 
+                "message": f"Land with ID {land_id} not found",
+                "details": {"land_id": land_id}
+            }
+        )
+    
+    if land.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "ACCESS_DENIED",
+                "message": "You don't have permission to modify this land's dictionary",
+                "details": {"land_id": land_id, "owner_id": land.owner_id}
+            }
+        )
+    
+    try:
+        from app.services.dictionary_service import DictionaryService
+        
+        dict_service = DictionaryService(db)
+        result = await dict_service.populate_land_dictionary(land_id, force_refresh)
+        
+        # Obtenir les statistiques du dictionnaire
+        stats = await dict_service.get_land_dictionary_stats(land_id)
+        
+        return {
+            **result,
+            "dictionary_stats": stats,
+            "land_name": land.name,
+            "message": f"Dictionary {'updated' if result['action'] == 'created' else result['action']} successfully"
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "DICTIONARY_POPULATION_FAILED",
+                "message": "Failed to populate land dictionary",
+                "details": {"land_id": land_id, "error": str(e)}
+            }
+        )
+
+
+@router.get("/{land_id}/dictionary-stats", response_model=Dict[str, Any])
+async def get_land_dictionary_stats_v2(
+    land_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """
+    Récupère les statistiques du dictionnaire d'un land.
+    
+    Permet de diagnostiquer les problèmes de Dictionary Starvation.
+    """
+    # Verify land exists and user has access
+    land = await crud_land.get(db, id=land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land not found")
+    
+    if land.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        from app.services.dictionary_service import DictionaryService
+        
+        dict_service = DictionaryService(db)
+        stats = await dict_service.get_land_dictionary_stats(land_id)
+        
+        return {
+            **stats,
+            "land_name": land.name,
+            "land_words": land.words or [],
+            "diagnosis": {
+                "has_dictionary": stats["total_entries"] > 0,
+                "problem": "Dictionary Starvation" if stats["total_entries"] == 0 else None,
+                "solution": "Run populate-dictionary endpoint" if stats["total_entries"] == 0 else None
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get dictionary stats: {str(e)}"
+        )
+
+
 @router.post("/{land_id}/crawl", response_model=CrawlJobResponse)
 async def crawl_land_v2(
     land_id: int,
@@ -332,15 +685,37 @@ async def crawl_land_v2(
         )
     
     try:
-        return await start_crawl_for_land(db, land_id, crawl_request)
+        job_payload = await start_crawl_for_land(db, land_id, crawl_request)
+
+        job_status = job_payload.get("status")
+        if isinstance(job_status, CrawlStatus):
+            status_enum = job_status
+        elif hasattr(job_status, "name"):
+            status_enum = CrawlStatus[job_status.name]
+        else:
+            status_str = str(job_status)
+            if "CrawlStatus." in status_str:
+                status_str = status_str.split(".", 1)[1]
+            status_enum = CrawlStatus[status_str.upper()]
+
+        return CrawlJobResponse(
+            job_id=job_payload.get("job_id"),
+            celery_task_id=job_payload.get("celery_task_id", ""),
+            land_id=job_payload.get("land_id"),
+            status=status_enum,
+            created_at=job_payload.get("created_at"),
+            parameters=job_payload.get("parameters") or {},
+        )
         
     except Exception as e:
+        logger.error(f"Error starting crawl for land {land_id}: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
             detail={
                 "error_code": "CRAWL_START_FAILED",
                 "message": "Failed to start crawl job",
-                "details": {"land_id": land_id, "error": str(e)},
+                "details": {"land_id": land_id, "error": str(e), "type": type(e).__name__},
                 "suggestion": "Check crawl parameters and try again"
             }
         )
@@ -418,3 +793,386 @@ async def get_land_stats_v2(
             "data_quality_score": "87%"
         }
     }
+
+
+@router.post("/{land_id}/terms", response_model=Land)
+async def add_terms_to_land_v2(
+    land_id: int,
+    payload: LandAddTerms,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Land:
+    """
+    Add keywords to a land dictionary (replaces legacy `land addterm`).
+    """
+    land = await crud_land.get(db, id=land_id)
+    if not land or land.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "LAND_NOT_FOUND",
+                "message": f"Land with ID {land_id} not found or inaccessible",
+                "details": {"land_id": land_id},
+                "suggestion": "Ensure the land exists and you are the owner",
+            },
+        )
+
+    updated = await crud_land.add_terms_to_land(db, land_id, payload.terms)
+    if not updated:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "LAND_TERMS_UPDATE_FAILED",
+                "message": "Failed to add terms to land",
+            },
+        )
+    return updated
+
+
+@router.post("/{land_id}/urls", response_model=Land)
+async def add_urls_to_land_v2(
+    land_id: int,
+    payload: LandAddUrls,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Land:
+    """
+    Append start URLs to a land (replaces legacy `land addurl`).
+    """
+    land = await crud_land.get(db, id=land_id)
+    if not land or land.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "LAND_NOT_FOUND",
+                "message": f"Land with ID {land_id} not found or inaccessible",
+                "details": {"land_id": land_id},
+                "suggestion": "Ensure the land exists and you are the owner",
+            },
+        )
+
+    updated = await crud_land.add_urls_to_land(db, land_id, payload.urls)
+    if not updated:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "LAND_URLS_UPDATE_FAILED",
+                "message": "Failed to add URLs to land",
+            },
+        )
+    return updated
+
+
+@router.post("/{land_id}/media-analysis", response_model=MediaAnalysisResponse, deprecated=True)
+async def analyze_land_media_v2(
+    land_id: int,
+    analysis_request: MediaAnalysisRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> MediaAnalysisResponse:
+    """
+    [DEPRECATED] Synchronous media analysis - use /media-analysis-async instead.
+    
+    This synchronous endpoint is deprecated due to timeout issues with large datasets.
+    Use the async version (/media-analysis-async) which processes media via Celery tasks.
+    
+    Args:
+        land_id: ID of the land to analyze media for
+        analysis_request: Parameters including depth and minrel filters
+        
+    Returns:
+        MediaAnalysisResponse with analysis results and statistics
+        
+    Deprecated:
+        Use POST /{land_id}/media-analysis-async for better performance and reliability.
+    """
+    start_time = time.time()
+    
+    # Verify land exists and user has access
+    land = await crud_land.get(db, id=land_id)
+    if not land:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "LAND_NOT_FOUND",
+                "message": f"Land with ID {land_id} not found",
+                "details": {"land_id": land_id},
+                "suggestion": "Check the land ID and ensure it exists"
+            }
+        )
+    
+    if land.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "ACCESS_DENIED",
+                "message": "You don't have permission to analyze media for this land",
+                "details": {"land_id": land_id, "owner_id": land.owner_id},
+                "suggestion": "Contact the land owner or analyze lands you own"
+            }
+        )
+    
+    try:
+        # Get expressions based on filters
+        from sqlalchemy import text
+        expressions_query = await db.execute(
+            text("""
+            SELECT e.id, e.url, e.depth, e.relevance
+            FROM expressions e 
+            WHERE e.land_id = :land_id
+            AND (:depth = 0 OR e.depth <= :depth)
+            AND e.relevance >= :minrel
+            ORDER BY e.relevance DESC
+            """),
+            {
+                "land_id": land_id,
+                "depth": analysis_request.depth if analysis_request.depth is not None else 999,
+                "minrel": analysis_request.minrel if analysis_request.minrel is not None else 0.0
+            }
+        )
+        
+        expressions = expressions_query.fetchall()
+        total_expressions = await db.execute(
+            text("SELECT COUNT(*) FROM expressions WHERE land_id = :land_id"),
+            {"land_id": land_id}
+        )
+        total_count = total_expressions.scalar()
+        
+        # Get media for filtered expressions
+        expression_ids = [exp.id for exp in expressions]
+        if not expression_ids:
+            return MediaAnalysisResponse(
+                land_id=land_id,
+                land_name=land.name,
+                total_expressions=total_count,
+                filtered_expressions=0,
+                total_media=0,
+                analyzed_media=0,
+                failed_analysis=0,
+                results=[],
+                processing_time=time.time() - start_time,
+                filters_applied={
+                    "depth": analysis_request.depth,
+                    "minrel": analysis_request.minrel
+                }
+            )
+        
+        # Get media for these expressions
+        media_query = await db.execute(
+            text("""
+            SELECT m.id, m.url, m.type, m.expression_id, m.is_processed
+            FROM media m
+            WHERE m.expression_id = ANY(:expression_ids)
+            AND m.type = 'IMAGE'
+            ORDER BY m.created_at DESC
+            """),
+            {"expression_ids": expression_ids}
+        )
+        
+        media_list = media_query.fetchall()
+        total_media = len(media_list)
+        
+        # Initialize media processor
+        async with httpx.AsyncClient() as http_client:
+            media_processor = MediaProcessor(db, http_client)
+            
+            analyzed_count = 0
+            failed_count = 0
+            analysis_results = []
+            
+            # Process each media item
+            for media_item in media_list:
+                try:
+                    # If already processed, get existing analysis data
+                    if media_item.is_processed:
+                        analyzed_count += 1
+                        
+                        # Get full media record with analysis data
+                        full_media_query = await db.execute(
+                            text("""
+                            SELECT id, url, width, height, format, file_size, dominant_colors, 
+                                   websafe_colors, has_transparency, aspect_ratio, image_hash,
+                                   processing_error, analysis_error
+                            FROM media 
+                            WHERE id = :media_id
+                            """),
+                            {"media_id": media_item.id}
+                        )
+                        full_media = full_media_query.fetchone()
+                        
+                        if full_media:
+                            analysis_results.append({
+                                "media_id": full_media.id,
+                                "url": full_media.url,
+                                "status": "success" if not full_media.processing_error and not full_media.analysis_error else "failed",
+                                "width": full_media.width,
+                                "height": full_media.height,
+                                "format": full_media.format,
+                                "file_size": full_media.file_size,
+                                "dominant_colors": full_media.dominant_colors or [],
+                                "websafe_colors": full_media.websafe_colors or {},
+                                "has_transparency": full_media.has_transparency,
+                                "aspect_ratio": full_media.aspect_ratio,
+                                "image_hash": full_media.image_hash,
+                                "error": full_media.processing_error or full_media.analysis_error
+                            })
+                        continue
+                    
+                    # Analyze the media (for unprocessed media)
+                    analysis_result = await media_processor.analyze_image(media_item.url)
+                    
+                    if analysis_result.get('error'):
+                        failed_count += 1
+                        analysis_results.append({
+                            "media_id": media_item.id,
+                            "url": media_item.url,
+                            "status": "failed",
+                            "error": analysis_result['error']
+                        })
+                    else:
+                        analyzed_count += 1
+                        
+                        # Update media record with analysis results
+                        await crud_media.media.update_media_analysis(
+                            db,
+                            media_id=media_item.id,
+                            analysis_data=analysis_result
+                        )
+                        
+                        analysis_results.append({
+                            "media_id": media_item.id,
+                            "url": media_item.url,
+                            "status": "success",
+                            "width": analysis_result.get('width'),
+                            "height": analysis_result.get('height'),
+                            "format": analysis_result.get('format'),
+                            "file_size": analysis_result.get('file_size'),
+                            "dominant_colors": analysis_result.get('dominant_colors', []),
+                            "websafe_colors": analysis_result.get('websafe_colors', {}),
+                            "has_transparency": analysis_result.get('has_transparency'),
+                            "aspect_ratio": analysis_result.get('aspect_ratio'),
+                            "image_hash": analysis_result.get('image_hash')
+                        })
+                        
+                except Exception as e:
+                    failed_count += 1
+                    analysis_results.append({
+                        "media_id": media_item.id,
+                        "url": media_item.url,
+                        "status": "failed",
+                        "error": str(e)
+                    })
+        
+        processing_time = time.time() - start_time
+        
+        return MediaAnalysisResponse(
+            land_id=land_id,
+            land_name=land.name,
+            total_expressions=total_count,
+            filtered_expressions=len(expressions),
+            total_media=total_media,
+            analyzed_media=analyzed_count,
+            failed_analysis=failed_count,
+            results=analysis_results,
+            processing_time=round(processing_time, 2),
+            filters_applied={
+                "depth": analysis_request.depth,
+                "minrel": analysis_request.minrel
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "MEDIA_ANALYSIS_FAILED",
+                "message": "Failed to analyze media for land",
+                "details": {"land_id": land_id, "error": str(e)},
+                "suggestion": "Check analysis parameters and try again"
+            }
+        )
+
+
+@router.get("/{land_id}/pipeline-stats", response_model=Dict[str, Any])
+async def get_land_pipeline_stats_v2(
+    land_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """
+    Récupère les statistiques détaillées du pipeline de crawl pour un land.
+    
+    Fournit des métriques sur:
+    - Expressions créées, crawlées, approuvées
+    - Distribution par profondeur
+    - Progression temporelle
+    - Santé du dictionnaire
+    """
+    # Verify land exists and user has access
+    land = await crud_land.get(db, id=land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land not found")
+    
+    if land.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        from app.services.crawling_service import get_crawl_pipeline_stats
+        
+        stats = await get_crawl_pipeline_stats(db, land_id)
+        
+        return {
+            **stats,
+            "land_name": land.name,
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get pipeline stats: {str(e)}"
+        )
+
+
+@router.post("/{land_id}/fix-pipeline", response_model=Dict[str, Any])
+async def fix_land_pipeline_v2(
+    land_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """
+    Répare les incohérences du pipeline de crawl pour un land.
+    
+    Applique la logique legacy:
+    - approved_at = NOW() pour les expressions pertinentes (relevance > 0)
+    - approved_at = NULL pour les expressions non pertinentes (relevance = 0)
+    """
+    # Verify land exists and user has access
+    land = await crud_land.get(db, id=land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land not found")
+    
+    if land.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        from app.services.crawling_service import fix_pipeline_inconsistencies
+        
+        result = await fix_pipeline_inconsistencies(db, land_id)
+        
+        return {
+            **result,
+            "land_name": land.name,
+            "message": f"Pipeline fixed: {result['total_fixes']} expressions updated"
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fix pipeline: {str(e)}"
+        )

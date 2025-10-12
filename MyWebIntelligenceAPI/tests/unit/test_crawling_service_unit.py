@@ -60,8 +60,9 @@ class TestCrawlingService:
             )
             
             # Verify
-            assert result["id"] == 123
+            assert result["job_id"] == 123
             assert result["ws_channel"] == "crawl_progress_123"
+            assert result["status"] == CrawlStatus.PENDING.value
             
             # Verify land lookup
             mock_get_land.assert_called_once_with(self.mock_db, id=1)
@@ -112,7 +113,7 @@ class TestCrawlingService:
             create_args = mock_create_job.call_args[1]
             assert create_args['obj_in'].parameters['limit'] == 500
             assert create_args['obj_in'].parameters['depth'] == 5
-            assert create_args['obj_in'].parameters['http_status'] == "200"
+            assert create_args['obj_in'].parameters['http_status'] == 200
     
     async def test_start_crawl_for_land_land_not_found(self):
         """Test land inexistant"""
@@ -263,10 +264,10 @@ class TestCrawlingService:
             assert job_create.job_type == "crawl"
             assert isinstance(job_create.parameters, dict)
             
-            params = job_create.parameters
+            params = create_args['obj_in'].parameters
             assert params['limit'] == 200
             assert params['depth'] == 4
-            assert params['http_status'] == "404"
+            assert params['http_status'] == 404
     
     async def test_start_crawl_for_land_default_parameters(self):
         """Test paramètres par défaut (None)"""

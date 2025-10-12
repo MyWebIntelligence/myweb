@@ -53,3 +53,13 @@ class CRUDUser:
         return user_obj
 
 user = CRUDUser()
+
+
+# Backward compatibility helpers
+async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
+    """Compat helper used by legacy dependencies."""
+    return await user.get_by_username(db, username)
+
+
+async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
+    return await user.get_by_email(db, email)

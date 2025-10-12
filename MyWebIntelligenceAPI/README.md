@@ -178,6 +178,23 @@ Avec coverage :
 pytest --cov=app tests/
 ```
 
+## 🧭 Scénario d'usage complet
+
+Un script `scripts/land_scenario.py` reproduit l'ancien workflow CLI : création d'un land, ajout de termes/URLs puis lancement d'un crawl.
+
+```bash
+python scripts/land_scenario.py \
+  --land-name "MyResearchTopic" \
+  --terms "keyword1,keyword2" \
+  --urls "https://example.org,https://example.com" \
+  --crawl-limit 25
+```
+
+Variables d'environnement prises en charge :
+
+- `MYWI_BASE_URL` (par défaut `http://localhost:8000`)
+- `MYWI_USERNAME` / `MYWI_PASSWORD` (par défaut `admin@example.com` / `changeme`)
+
 ## 🔍 Monitoring
 
 ### Flower (Monitoring Celery)

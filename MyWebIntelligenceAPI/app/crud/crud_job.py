@@ -41,4 +41,18 @@ class CRUDJob:
             await db.refresh(job_obj)
         return job_obj
 
+    async def update(self, db: AsyncSession, *, db_obj: models.CrawlJob, obj_in: Dict[str, Any]) -> models.CrawlJob:
+        """Met à jour un job existant avec des données arbitraires."""
+        for field, value in obj_in.items():
+            if hasattr(db_obj, field):
+                # Map task_id to celery_task_id for compatibility
+                if field == "task_id":
+                    setattr(db_obj, "celery_task_id", value)
+                else:
+                    setattr(db_obj, field, value)
+        
+        await db.commit()
+        await db.refresh(db_obj)
+        return db_obj
+
 job = CRUDJob()

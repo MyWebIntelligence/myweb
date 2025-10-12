@@ -20,7 +20,7 @@ flower==2.0.1  # Pour le monitoring Celery
 # HTTP & Scraping
 httpx==0.25.2
 beautifulsoup4==4.12.2
-lxml==4.9.2
+lxml==4.9.3
 aiohttp==3.9.1
 
 # Authentification & Sécurité
