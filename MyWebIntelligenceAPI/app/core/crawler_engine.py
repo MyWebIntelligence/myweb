@@ -295,16 +295,23 @@ class CrawlerEngine:
                     # Determine link type (internal vs external)
                     link_type = "internal" if parsed.netloc == urlparse(expr_url).netloc else "external"
                     
+                    rel_attr = link.get('rel')
+                    if isinstance(rel_attr, (list, tuple)):
+                        rel_attr = " ".join(str(item) for item in rel_attr if item)
+                    elif rel_attr is not None:
+                        rel_attr = str(rel_attr)
+
                     await crud_link.expression_link.create_link(
                         self.db, 
                         source_id=expr.id, 
                         target_id=target_expr.id,
                         anchor_text=link_text,
                         link_type=link_type,
-                        rel_attribute=link.get('rel')
+                        rel_attribute=rel_attr
                     )
                     
             except Exception as e:
+                await self.db.rollback()
                 logger.warning(f"Error processing link {href}: {e}")
                 continue
         

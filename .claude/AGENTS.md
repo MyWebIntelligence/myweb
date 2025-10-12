@@ -281,17 +281,16 @@ expressions (1) → (n) paragraphs
 
 ### Authentification
 ```bash
-# Option 1 : depuis l’hôte
-TOKEN=$(curl -s -X POST "http://localhost:8000/api/v1/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=admin@example.com&password=changeme" | jq -r .access_token)
 
-# Option 2 : via Docker Compose (service API)
 TOKEN=$(docker compose exec mywebintelligenceapi curl -s -X POST "http://localhost:8000/api/v1/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=${MYWI_USERNAME:-admin@example.com}&password=${MYWI_PASSWORD:-changeme}" | jq -r .access_token)
+  -d "username=admin@example.com&password=changethispassword" \
+  | jq -r '.access_token')
 
-echo "Token JWT: $TOKEN"
+echo "Token JWT : $TOKEN"
+export TOKEN
+
+
 ```
 
 ### Préparer un projet de test "giletsjaunes"
@@ -301,7 +300,7 @@ LAND_ID=$(
   curl -s -X POST "http://localhost:8000/api/v2/lands/" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{"name":"giletsjaunes","description":"testprojet gilets jaunes","words":["gilets jaunes"]}' \
+    -d '{"name":"Lecornu202531","description":"testprojet gilets jaunes","words":["lecornu"]}' \
   | jq -r '.id // empty'
 )
 
@@ -314,8 +313,11 @@ else
   curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/urls" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    --data "$(jq -Rs '{urls: split("\n") | map(select(length>0))}' MyWebIntelligenceAPI/scripts/data/gilets_jaunes_urls.txt)"
+    --data "$(jq -Rs '{urls: split("\n") | map(select(length>0))}' MyWebIntelligenceAPI/scripts/data/lecornu.txt)"
 fi
+
+
+
 ```
 
 ### 1. Lister les Lands
@@ -341,7 +343,7 @@ curl -X GET "http://localhost:8000/api/v2/lands/${LAND_ID}/stats" \
 curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/crawl" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"analyze_media": true, "limit": 5}'
+  -d '{"analyze_media": true, "limit": 25, "llm_validation": true}'
 ```
 
 ### 5. Analyser les Médias (ASYNC)

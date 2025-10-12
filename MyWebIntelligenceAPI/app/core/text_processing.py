@@ -152,6 +152,29 @@ async def get_land_dictionary(db: AsyncSession, land_id: int) -> Dict[str, float
     
     return dictionary
 
+
+def get_land_dictionary_sync(db, land_id: int) -> Dict[str, float]:
+    """
+    Synchronous alternative used by Celery workers relying on Session.
+    """
+    from sqlalchemy.orm import Session
+    from app.db.models import Word, LandDictionary
+
+    if not isinstance(db, Session):
+        raise TypeError("get_land_dictionary_sync expects a synchronous Session")
+
+    result = (
+        db.query(Word.lemma, LandDictionary.weight)
+        .join(LandDictionary, Word.id == LandDictionary.word_id)
+        .filter(LandDictionary.land_id == land_id)
+        .all()
+    )
+
+    dictionary: Dict[str, float] = {}
+    for lemma, weight in result:
+        dictionary[lemma] = weight
+    return dictionary
+
 async def expression_relevance(dictionary: Dict[str, float], expr, lang: str = "fr") -> float:
     """
     Calculate the relevance score of an expression based on the land's dictionary.

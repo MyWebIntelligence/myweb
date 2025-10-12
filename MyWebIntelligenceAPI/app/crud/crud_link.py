@@ -31,6 +31,9 @@ class CRUDExpressionLink:
             # Le lien existe déjà, ce n'est pas une erreur.
             await db.rollback()
             return None
+        except Exception:
+            await db.rollback()
+            raise
 
     async def delete_links_for_expression(self, db: AsyncSession, source_id: int):
         """

@@ -22,6 +22,8 @@ services:
       context: ./MyWebIntelligenceAPI
       dockerfile: Dockerfile
     container_name: mywebintelligenceapi
+    env_file:
+      - ./MyWebIntelligenceAPI/.env
     depends_on:
       db:
         condition: service_healthy
@@ -45,6 +47,8 @@ services:
     build:
       context: ./MyWebIntelligenceAPI
       dockerfile: Dockerfile
+    env_file:
+      - ./MyWebIntelligenceAPI/.env
     depends_on:
       db:
         condition: service_healthy
