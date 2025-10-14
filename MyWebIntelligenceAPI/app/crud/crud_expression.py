@@ -17,11 +17,20 @@ class CRUDExpression:
     ) -> List[models.Expression]:
         """
         Récupère une liste d'expressions à crawler pour un land donné.
+
+        LOGIQUE DES TIMESTAMPS:
+        - created_at: Quand l'expression est ajoutée en base (découverte URL)
+        - crawled_at: Quand le contenu HTTP a été récupéré (fetch réussi)
+        - approved_at: Quand le crawler a traité la réponse (même si 404/erreur)
+        - readable_at: Quand le contenu readable a été extrait
+        - updated_at: Quand le contenu readable a été modifié
+
+        CRITÈRE: approved_at IS NULL = expressions jamais traitées par le crawler
         """
         query = (
             select(models.Expression)
             .where(models.Expression.land_id == land_id)
-            .where(models.Expression.crawled_at.is_(None))
+            .where(models.Expression.approved_at.is_(None))
             .order_by(models.Expression.depth.asc(), models.Expression.created_at.asc())
         )
 
@@ -99,10 +108,12 @@ class CRUDExpression:
     async def get_distinct_depths(self, db: AsyncSession, land_id: int, http_status: Optional[str] = None) -> List[int]:
         """
         Récupère les profondeurs distinctes des expressions à crawler.
+        Utilise approved_at IS NULL comme critère (pas crawled_at).
         """
         query = (
             select(models.Expression.depth)
             .where(models.Expression.land_id == land_id)
+            .where(models.Expression.approved_at.is_(None))
             .distinct()
             .order_by(models.Expression.depth)
         )
@@ -113,11 +124,7 @@ class CRUDExpression:
                 http_value = None
             if http_value is not None:
                 query = query.where(models.Expression.http_status == http_value)
-            else:
-                query = query.where(models.Expression.crawled_at.is_(None))
-        else:
-            query = query.where(models.Expression.crawled_at.is_(None))
-        
+
         result = await db.execute(query)
         return list(result.scalars().all())
 

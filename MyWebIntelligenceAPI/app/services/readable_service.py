@@ -411,13 +411,12 @@ class ReadableService:
                 title=expression.title,
                 land_id=expression.land_id
             )
-            
+
             expression.relevance = new_relevance
-            
-            # Auto-approve if relevant
-            if new_relevance > 0:
-                expression.approved_at = datetime.utcnow()
-                
+
+            # approved_at is set whenever readable content is saved
+            expression.approved_at = datetime.utcnow()
+
         except Exception as e:
             logger.error(f"Error recalculating relevance for expression {expression.id}: {e}")
     

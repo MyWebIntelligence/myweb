@@ -135,39 +135,79 @@ class CrawlerEngine:
         logger.info("Crawling URL: %s (analyze_media=%s)", expr_url, analyze_media)
         
         # 1. Fetch content
+        content_type = None
+        content_length = None
+
         try:
             response = await self.http_client.get(expr_url)
             response.raise_for_status()
             html_content = response.text
             http_status_code = response.status_code
+
+            # Extract HTTP headers
+            content_type = response.headers.get('content-type', None)
+            content_length_str = response.headers.get('content-length', None)
+            if content_length_str:
+                try:
+                    content_length = int(content_length_str)
+                except ValueError:
+                    pass
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error for {expr_url}: {e}")
             html_content = ""
             http_status_code = e.response.status_code
+            if e.response:
+                content_type = e.response.headers.get('content-type', None)
         except httpx.RequestError as e:
             logger.error(f"Request error for {expr_url}: {e}")
             html_content = ""
             http_status_code = 0 # Custom code for request errors
 
-        update_data = {"http_status": http_status_code, "crawled_at": datetime.utcnow()}
+        update_data = {
+            "http_status": str(http_status_code),  # Store as string (legacy format)
+            "crawled_at": datetime.utcnow(),
+            "content_type": content_type,
+            "content_length": content_length
+        }
 
         # 2. Extract content and metadata with fallbacks (try even if no initial content)
-        readable_content, soup, extraction_method = await content_extractor.get_readable_content_with_fallbacks(expr_url, html_content)
-        
-        if soup:
-            metadata = content_extractor.get_metadata(soup, expr_url)
+        extraction_result = await content_extractor.get_readable_content_with_fallbacks(expr_url, html_content)
+
+        readable_content = extraction_result.get('readable')
+        extraction_source = extraction_result.get('extraction_source', 'unknown')
+        media_list = extraction_result.get('media_list', [])
+        links = extraction_result.get('links', [])
+
+        # Store raw HTML content (legacy field)
+        if extraction_result.get('content'):
+            update_data["content"] = extraction_result['content']
+            logger.debug(f"Storing HTML content for {expr_url}: {len(extraction_result['content'])} chars")
         else:
-            # Fallback metadata if no soup available
-            metadata = {"title": expr_url, "description": None, "keywords": None, "lang": None}
-        
+            logger.warning(f"No HTML content in extraction_result for {expr_url}")
+
         if readable_content:
-            metadata_lang = metadata.get('lang') or metadata.get('language')
-            
-            update_data["title"] = metadata['title']
-            update_data["description"] = metadata['description']
-            update_data["keywords"] = metadata['keywords']
-            update_data["language"] = metadata_lang
+            # Calculate word_count, reading_time and detect language from readable content
+            from app.utils.text_utils import analyze_text_metrics
+            text_metrics = analyze_text_metrics(readable_content)
+            word_count = text_metrics.get('word_count', 0)
+            reading_time = max(1, word_count // 200) if word_count > 0 else None  # 200 words/min
+            detected_lang = text_metrics.get('language')  # Language detected by langdetect
+
+            # Fallback to HTML lang attribute if detection fails
+            html_lang = extraction_result.get('language')
+            final_lang = detected_lang or html_lang
+
+            update_data["title"] = extraction_result.get('title', expr_url)
+            update_data["description"] = extraction_result.get('description')
+            update_data["keywords"] = extraction_result.get('keywords')
+            update_data["language"] = final_lang
             update_data["readable"] = readable_content
+            update_data["canonical_url"] = extraction_result.get('canonical_url')
+            update_data["word_count"] = word_count
+            update_data["reading_time"] = reading_time
+
+            # Store extraction source for debugging (optional, can be logged)
+            logger.debug(f"Content extracted via: {extraction_source}")
 
             # 3. Calculate relevance (requires dictionary)
             land_dict = await text_processing.get_land_dictionary(self.db, expr_land_id)
@@ -186,25 +226,34 @@ class CrawlerEngine:
                 metadata_lang or 'fr'
             )
             update_data["relevance"] = relevance
-            
-            # 4. Apply legacy pipeline logic: Update approved_at for relevant expressions
-            if relevance > 0:
-                update_data["approved_at"] = datetime.utcnow()
-                logger.debug(f"Expression {expr_id} approved with relevance {relevance}")
-            else:
-                logger.debug(f"Expression {expr_id} not approved (relevance: {relevance})")
+
+            # 4. approved_at is set whenever readable content is saved
+            update_data["approved_at"] = datetime.utcnow()
+            logger.debug(f"Expression {expr_id} processed with relevance {relevance}")
 
             # 5. Extract links and media with error handling
             # Skip link/media extraction in test environment to avoid CRUD method issues
             import os
             if not os.getenv('PYTEST_CURRENT_TEST'):
                 try:
-                    await self._extract_and_save_links(soup, expr, expr_url, expr_land_id, expr_depth)
+                    # Use markdown links if available (legacy behavior)
+                    if links:
+                        await self._create_links_from_markdown(links, expr, expr_url, expr_land_id, expr_depth)
+                    else:
+                        # Fallback to HTML parsing if markdown extraction failed
+                        if extraction_result.get('soup'):
+                            await self._extract_and_save_links(extraction_result['soup'], expr, expr_url, expr_land_id, expr_depth)
                 except Exception as e:
                     logger.warning(f"Error extracting links for {expr_url}: {e}")
-                    
+
                 try:
-                    await self._extract_and_save_media(soup, expr, expr_url, expr_id, analyze_media)
+                    # Save media from enriched markdown (legacy behavior)
+                    if media_list:
+                        await self._save_media_from_list(media_list, expr_id)
+
+                    # Also extract dynamic media if requested
+                    if analyze_media and extraction_result.get('soup'):
+                        await self._extract_and_save_media(extraction_result['soup'], expr, expr_url, expr_id, analyze_media)
                 except Exception as e:
                     logger.warning(f"Error extracting media for {expr_url}: {e}")
             else:
@@ -217,6 +266,132 @@ class CrawlerEngine:
 
         # Return HTTP status code for statistics
         return http_status_code
+
+    async def _create_links_from_markdown(self, links: list, expr: models.Expression, expr_url: str, expr_land_id: int, expr_depth: Optional[int]):
+        """
+        Create expression links from markdown-extracted URLs (legacy behavior).
+        This reproduces the logic from _legacy/core.py:1787.
+        """
+        from urllib.parse import urljoin, urlparse
+        from app.crud import crud_domain, crud_expression, crud_link
+
+        links_created = 0
+
+        for link_url in links:
+            try:
+                # Resolve relative URLs
+                full_url = urljoin(expr_url, link_url)
+                parsed = urlparse(full_url)
+
+                # Validate URL structure
+                if not parsed.scheme in ['http', 'https'] or not parsed.netloc:
+                    continue
+
+                # Clean URL (remove fragments and tracking params)
+                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                if parsed.query:
+                    tracking_params = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
+                                     'fbclid', 'gclid', 'ref', 'source', 'campaign'}
+                    query_params = []
+                    for param in parsed.query.split('&'):
+                        if '=' in param:
+                            key = param.split('=')[0].lower()
+                            if key not in tracking_params:
+                                query_params.append(param)
+                    if query_params:
+                        clean_url += '?' + '&'.join(query_params)
+
+                # Get or create domain
+                domain_name = parsed.netloc.lower()
+                domain = await crud_domain.domain.get_or_create(
+                    self.db, name=domain_name, land_id=expr_land_id
+                )
+
+                # Check if expression already exists
+                existing_expr = await crud_expression.expression.get_by_url_and_land(
+                    self.db, url=clean_url, land_id=expr_land_id
+                )
+
+                if not existing_expr:
+                    # Create new expression for discovered link
+                    depth = expr_depth + 1 if expr_depth is not None else 1
+                    new_expr = await crud_expression.expression.get_or_create_expression(
+                        self.db,
+                        land_id=expr_land_id,
+                        url=clean_url,
+                        depth=depth
+                    )
+                    target_expr = new_expr
+                else:
+                    target_expr = existing_expr
+
+                # Create ExpressionLink relationship
+                if target_expr and target_expr.id != expr.id:
+                    link_type = "internal" if parsed.netloc == urlparse(expr_url).netloc else "external"
+
+                    await crud_link.expression_link.create_link(
+                        self.db,
+                        source_id=expr.id,
+                        target_id=target_expr.id,
+                        anchor_text="",  # Not available from markdown
+                        link_type=link_type,
+                        rel_attribute=None
+                    )
+                    links_created += 1
+
+            except Exception as e:
+                logger.warning(f"Error processing markdown link {link_url}: {e}")
+                continue
+
+        if links_created > 0:
+            logger.info(f"Created {links_created} links from markdown for {expr_url}")
+
+    async def _save_media_from_list(self, media_list: list, expr_id: int):
+        """
+        Save media from the enriched markdown media list (legacy behavior).
+        This reproduces the logic from _legacy/core.py:1780-1786.
+        """
+        from app.crud import crud_media
+
+        for media_item in media_list:
+            try:
+                media_url = media_item.get('url')
+                media_type_str = media_item.get('type', 'img')
+
+                # Skip data URLs
+                if not media_url or media_url.startswith('data:'):
+                    continue
+
+                # Check if media already exists
+                existing_media = await crud_media.media.media_exists(
+                    self.db, expression_id=expr_id, url=media_url
+                )
+
+                if not existing_media:
+                    # Map type string to MediaType enum
+                    if media_type_str == 'img':
+                        media_type = models.MediaType.IMAGE
+                    elif media_type_str == 'video':
+                        media_type = models.MediaType.VIDEO
+                    elif media_type_str == 'audio':
+                        media_type = models.MediaType.AUDIO
+                    else:
+                        media_type = models.MediaType.IMAGE  # Default
+
+                    media_data = {
+                        'url': media_url,
+                        'type': media_type,
+                        'is_processed': False
+                    }
+
+                    await crud_media.media.create_media(
+                        self.db, expression_id=expr_id, media_data=media_data
+                    )
+                    logger.debug(f"Saved media from markdown: {media_url}")
+
+            except Exception as e:
+                logger.warning(f"Error saving media {media_item}: {e}")
+                continue
 
     async def _extract_and_save_links(self, soup, expr: models.Expression, expr_url: str, expr_land_id: int, expr_depth: Optional[int]):
         """Extracts and saves links from a crawled page with advanced validation."""

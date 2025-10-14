@@ -38,51 +38,104 @@ def analyze_text_metrics(text: str) -> Dict[str, any]:
     }
 
 def detect_language(text: str) -> Optional[str]:
-    """Détecte la langue d'un texte avec une approche simple."""
+    """
+    Détecte la langue d'un texte de manière robuste.
+
+    Supporte 55+ langues via langdetect (basé sur le détecteur de Google):
+    - Langues européennes: fr, en, es, de, it, pt, nl, pl, ru, etc.
+    - Langues asiatiques: zh-cn, zh-tw, ja, ko, th, vi, etc.
+    - Langues du Moyen-Orient: ar, he, fa, tr, etc.
+
+    Returns:
+        Code ISO 639-1 de la langue (ex: 'fr', 'en', 'es') ou None si échec
+    """
     try:
+        from langdetect import detect, LangDetectException
+
         # Minimum 20 caractères pour une détection fiable
-        if len(text.strip()) < 20:
+        if not text or len(text.strip()) < 20:
             return None
-        
+
+        # Nettoyer le texte (enlever URLs, emails, etc.)
+        clean_text = re.sub(r'http[s]?://\S+', '', text)
+        clean_text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '', clean_text)
+        clean_text = clean_text.strip()
+
+        if len(clean_text) < 20:
+            return None
+
+        # Détecter la langue
+        detected_lang = detect(clean_text)
+
+        # Normaliser certains codes (langdetect retourne parfois des codes non-standard)
+        lang_mapping = {
+            'zh-cn': 'zh',  # Chinois simplifié
+            'zh-tw': 'zh',  # Chinois traditionnel
+            'no': 'nb',     # Norvégien
+        }
+
+        detected_lang = lang_mapping.get(detected_lang, detected_lang)
+
+        # Valider que c'est un code ISO 639-1 valide (2 lettres)
+        if detected_lang and len(detected_lang) <= 3:
+            logger.debug(f"Language detected: {detected_lang}")
+            return detected_lang
+
+        return None
+
+    except (LangDetectException, Exception) as e:
+        # Fallback vers méthode simple si langdetect échoue
+        logger.debug(f"langdetect failed, using fallback method: {e}")
+        return _detect_language_fallback(text)
+
+def _detect_language_fallback(text: str) -> Optional[str]:
+    """
+    Méthode de fallback simple pour détection fr/en uniquement.
+    Utilisée si langdetect échoue.
+    """
+    try:
+        if not text or len(text.strip()) < 20:
+            return None
+
         # Mots français courants
         french_words = {
-            'le', 'de', 'et', 'à', 'un', 'il', 'être', 'et', 'en', 'avoir', 'que', 
+            'le', 'de', 'et', 'à', 'un', 'il', 'être', 'en', 'avoir', 'que',
             'pour', 'dans', 'ce', 'son', 'une', 'sur', 'avec', 'ne', 'se', 'pas',
-            'tout', 'plus', 'par', 'grand', 'cela', 'les', 'du', 'des', 'la'
+            'tout', 'plus', 'par', 'les', 'du', 'des', 'la', 'au', 'fait', 'été'
         }
-        
+
         # Mots anglais courants
         english_words = {
-            'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i', 'it',
+            'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'it',
             'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this',
             'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or'
         }
-        
+
         # Nettoyer et diviser le texte
         words = re.findall(r'\b[a-zA-ZàâäéèêëïîôùûüÿñçÀÂÄÉÈÊËÏÎÔÙÛÜŸÑÇ]+\b', text.lower())
-        
+
         if len(words) < 5:
             return None
-        
+
         french_score = sum(1 for word in words if word in french_words)
         english_score = sum(1 for word in words if word in english_words)
-        
+
         # Si suffisamment de mots détectés
         if french_score + english_score >= 3:
             if french_score > english_score:
                 return 'fr'
             elif english_score > french_score:
                 return 'en'
-        
+
         # Détection par caractères spéciaux français
         french_chars = re.findall(r'[àâäéèêëïîôùûüÿñç]', text.lower())
         if len(french_chars) > len(words) * 0.02:  # 2% de caractères français
             return 'fr'
-        
+
         return None
-        
+
     except Exception as e:
-        logger.warning(f"Error in language detection: {e}")
+        logger.warning(f"Error in fallback language detection: {e}")
         return None
 
 def calculate_reading_level(text: str, word_count: int, sentence_count: int) -> Optional[float]:

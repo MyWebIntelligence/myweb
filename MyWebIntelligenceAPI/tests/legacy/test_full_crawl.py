@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app.core.security import create_access_token
 
 # Test database setup
-SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
+SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///./tests/data/test.db"
 engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=True)
 TestingSessionLocal = async_sessionmaker(
     bind=engine, 

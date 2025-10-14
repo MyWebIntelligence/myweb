@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     # Configuration export
     EXPORT_STORAGE_PATH: str = "./exports"
     EXPORT_RETENTION_DAYS: int = 7
+
+    # Configuration external APIs (SerpAPI, SEO Rank, etc.)
+    SERPAPI_BASE_URL: str = "https://serpapi.com/search"
+    SERPAPI_TIMEOUT: int = 15
+    SEORANK_API_BASE_URL: str = "https://seo-rank.my-addr.com/api2/moz+sr+fb"
+    SEORANK_TIMEOUT: int = 15
+    SEORANK_REQUEST_DELAY: float = 0.0
     
     # Configuration logging
     LOG_LEVEL: str = "INFO"

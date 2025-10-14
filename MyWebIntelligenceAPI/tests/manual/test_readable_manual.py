@@ -5,12 +5,14 @@ Permet de tester rapidement sans setup complet.
 """
 import asyncio
 import sys
-import os
+from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any
 
 # Ajouter le répertoire racine au path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from app.schemas.readable import MergeStrategy, ExtractionResult, MediaInfo, LinkInfo
 

@@ -132,54 +132,108 @@ class SyncCrawlerEngine:
 
         html_content = ""
         http_status_code: Optional[int] = None
+        content_type: Optional[str] = None
+        content_length: Optional[int] = None
+
         try:
             response = self.http_client.get(expr_url)
             response.raise_for_status()
             html_content = response.text
             http_status_code = response.status_code
+
+            # Extract HTTP headers
+            content_type = response.headers.get('content-type', None)
+            content_length_str = response.headers.get('content-length', None)
+            if content_length_str:
+                try:
+                    content_length = int(content_length_str)
+                except ValueError:
+                    pass
         except httpx.HTTPStatusError as exc:
             logger.error("HTTP error for %s: %s", expr_url, exc)
             html_content = exc.response.text if exc.response is not None else ""
             http_status_code = exc.response.status_code if exc.response is not None else None
+            if exc.response is not None:
+                content_type = exc.response.headers.get('content-type', None)
         except httpx.RequestError as exc:
             logger.error("Request error for %s: %s", expr_url, exc)
             http_status_code = 0
 
         update_data: Dict[str, Optional[str]] = {
             "http_status": http_status_code,
+            "content_type": content_type,
+            "content_length": content_length,
             "crawled_at": datetime.utcnow(),
         }
 
-        readable_content = None
-        soup = None
-        extraction_method = "unknown"
-
+        # Extract readable content - function now returns a Dict, not tuple
+        extraction_result = {}
+        extraction_source = "unknown"
         try:
-            readable_content, soup, extraction_method = asyncio.run(
-                content_extractor.get_readable_content_with_fallbacks(expr_url, html_content)
+            extractor = content_extractor.ContentExtractor()
+            extraction_result = asyncio.run(
+                extractor.get_readable_content_with_fallbacks(expr_url, html_content)
             )
+            extraction_source = extraction_result.get('extraction_source', 'unknown')
+            logger.info("Crawling %s using %s", expr_url, extraction_source)
         except RuntimeError:
             # We might already be running in an event loop if the caller wraps asyncio.run
-            readable_content, soup, extraction_method = asyncio.get_event_loop().run_until_complete(
-                content_extractor.get_readable_content_with_fallbacks(expr_url, html_content)
+            extractor = content_extractor.ContentExtractor()
+            extraction_result = asyncio.get_event_loop().run_until_complete(
+                extractor.get_readable_content_with_fallbacks(expr_url, html_content)
             )
+            extraction_source = extraction_result.get('extraction_source', 'unknown')
+            logger.info("Crawling %s using %s", expr_url, extraction_source)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Readable extraction failed for %s: %s", expr_url, exc)
+            extraction_result = {}
 
-        if soup:
-            metadata = content_extractor.get_metadata(soup, expr_url)
+        # Extract values from result dict
+        readable_content = extraction_result.get('readable')
+        soup = extraction_result.get('soup')  # Needed for links/media extraction
+        metadata = {
+            'title': extraction_result.get('title', expr_url),
+            'description': extraction_result.get('description'),
+            'keywords': extraction_result.get('keywords'),
+            'lang': extraction_result.get('language')
+        }
+
+        # Debug logging
+        logger.info("Extraction result for %s: readable=%s chars, title=%s, soup=%s",
+                   expr_url,
+                   len(readable_content) if readable_content else 0,
+                   metadata.get('title', 'None')[:50] if metadata.get('title') else 'None',
+                   'present' if soup else 'missing')
+
+        # Store raw HTML content (legacy field) - ALIGNED WITH ASYNC CRAWLER
+        if extraction_result.get('content'):
+            update_data["content"] = extraction_result['content']
+            logger.debug(f"Storing HTML content for {expr_url}: {len(extraction_result['content'])} chars")
         else:
-            metadata = {"title": expr_url, "description": None, "keywords": None, "lang": None}
+            logger.warning(f"No HTML content in extraction_result for {expr_url}")
 
         if readable_content:
-            metadata_lang = metadata.get("lang") or metadata.get("language")
+            # Calculer word_count, reading_time et détecter la langue depuis le contenu lisible
+            from app.utils.text_utils import analyze_text_metrics
+            text_metrics = analyze_text_metrics(readable_content)
+            word_count = text_metrics.get('word_count', 0)
+            reading_time = max(1, word_count // 200) if word_count > 0 else None  # 200 mots/min
+            detected_lang = text_metrics.get('language')  # Langue détectée par langdetect
+
+            # Fallback vers langue HTML si détection échoue
+            html_lang = metadata.get("lang") or metadata.get("language")
+            final_lang = detected_lang or html_lang
+
             update_data.update(
                 {
                     "title": metadata.get("title"),
                     "description": metadata.get("description"),
                     "keywords": metadata.get("keywords"),
-                    "language": metadata_lang,
+                    "language": final_lang,
                     "readable": readable_content,
+                    "canonical_url": metadata.get("canonical_url"),
+                    "word_count": word_count,
+                    "reading_time": reading_time,
                 }
             )
 
@@ -204,8 +258,8 @@ class SyncCrawlerEngine:
                 loop.close()
             update_data["relevance"] = relevance
 
-            if relevance > 0:
-                update_data["approved_at"] = datetime.utcnow()
+            # approved_at is set whenever readable content is saved
+            update_data["approved_at"] = datetime.utcnow()
 
             self._handle_links_and_media(
                 soup=soup,
@@ -284,10 +338,14 @@ class SyncCrawlerEngine:
         http_status: Optional[str] = None,
         depth: Optional[int] = None,
     ):
+        """
+        CRITÈRE: approved_at IS NULL = expressions jamais traitées par le crawler
+        (pas crawled_at qui indique seulement le fetch HTTP)
+        """
         query = (
             self.db.query(models.Expression)
             .filter(models.Expression.land_id == land_id)
-            .filter(models.Expression.crawled_at.is_(None))
+            .filter(models.Expression.approved_at.is_(None))
             .order_by(models.Expression.depth.asc(), models.Expression.created_at.asc())
         )
 

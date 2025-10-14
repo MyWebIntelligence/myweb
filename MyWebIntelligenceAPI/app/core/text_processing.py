@@ -1,23 +1,139 @@
+import logging
+import os
+import re
+import shutil
+import zipfile
+from pathlib import Path
+from typing import Dict, List
+
 import nltk
-from nltk.stem import WordNetLemmatizer, SnowballStemmer
+from nltk.stem import SnowballStemmer, WordNetLemmatizer
 from nltk.tokenize import word_tokenize
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import Dict
-import re
-import logging
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Download required NLTK data
-nltk.download('punkt', quiet=True)
-nltk.download('wordnet', quiet=True)
-nltk.download('stopwords', quiet=True)
+
+def _cleanup_nltk_resource(resource: str) -> bool:
+    """
+    Remove corrupted NLTK resource artifacts so they can be re-downloaded.
+    """
+    removed = False
+    candidates: List[Path] = []
+    for base in list(nltk.data.path):
+        tokenizers_dir = Path(base) / "tokenizers"
+        candidates.extend(
+            [
+                tokenizers_dir / resource,
+                tokenizers_dir / f"{resource}.zip",
+                tokenizers_dir / f"{resource}.pickle",
+            ]
+        )
+
+    for candidate in candidates:
+        try:
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+                removed = True
+            elif candidate.exists():
+                candidate.unlink()
+                removed = True
+        except Exception:
+            continue
+
+    return removed
+
+
+def _ensure_nltk_tokenizers() -> bool:
+    """
+    Ensure required NLTK tokenizers are available with resilient SSL and local cache.
+    """
+    try:
+        data_root = getattr(settings, "DATA_LOCATION", None) or os.environ.get("MWI_DATA_LOCATION")
+        if not data_root:
+            data_root = str((Path(settings.EXPORT_STORAGE_PATH).resolve().parent) / "data")
+
+        nltk_dir = Path(data_root) / "nltk_data"
+        nltk_dir.mkdir(parents=True, exist_ok=True)
+        if str(nltk_dir) not in nltk.data.path:
+            nltk.data.path.append(str(nltk_dir))
+    except Exception:
+        pass
+
+    try:
+        import ssl  # type: ignore
+        import certifi  # type: ignore
+
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+        ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    ok = True
+    for resource in ("punkt", "punkt_tab"):
+        try:
+            nltk.data.find(f"tokenizers/{resource}")
+            continue
+        except Exception as exc:
+            if isinstance(exc, zipfile.BadZipFile):
+                _cleanup_nltk_resource(resource)
+            try:
+                nltk.download(resource, quiet=True)
+                nltk.data.find(f"tokenizers/{resource}")
+            except Exception:
+                ok = False
+    return ok
+
+
+def _simple_word_tokenize(text: str) -> List[str]:
+    """
+    Provide a simple fallback tokenizer mirroring the legacy behaviour.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    return re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", text.lower())
+
+
+_NLTK_OK = _ensure_nltk_tokenizers()
+if not _NLTK_OK:
+    logger.warning("NLTK 'punkt'/'punkt_tab' not available; using simple tokenizer fallback")
+
+
+def _tokenize(text: str, lang: str = "en") -> List[str]:
+    """
+    Tokenize text using NLTK when available, with a legacy-compatible fallback.
+    """
+    if _NLTK_OK:
+        try:
+            if lang == "fr":
+                return word_tokenize(text, language="french")
+            return word_tokenize(text, language="english")
+        except LookupError:
+            # Resource still missing despite download attempts; fall back
+            pass
+    return _simple_word_tokenize(text)
+
+# Download additional NLTK corpora used by advanced text processing features
+nltk.download("wordnet", quiet=True)
+nltk.download("stopwords", quiet=True)
 
 # Initialize stemmers for different languages
 english_lemmatizer = WordNetLemmatizer()
 french_stemmer = SnowballStemmer('french')
 english_stemmer = SnowballStemmer('english')
+
+
+def stem_word(word: str) -> str:
+    """
+    Stem a word using the French Snowball stemmer with caching, matching legacy behaviour.
+    """
+    if not hasattr(stem_word, "_stemmer"):
+        setattr(stem_word, "_stemmer", SnowballStemmer("french"))
+    cached_stemmer: SnowballStemmer = getattr(stem_word, "_stemmer")
+    return cached_stemmer.stem((word or "").lower())
 
 def get_lemma(term: str, lang: str = "en") -> str:
     """
@@ -32,13 +148,13 @@ def get_lemma(term: str, lang: str = "en") -> str:
     
     if lang == "fr":
         # French: Use Snowball stemmer
-        tokens = word_tokenize(cleaned_term, language='french')
+        tokens = _tokenize(cleaned_term, lang="fr")
         stemmed_tokens = [french_stemmer.stem(token) for token in tokens if token.isalnum()]
         return " ".join(stemmed_tokens).lower().strip()
     
     elif lang == "en":
         # English: Use WordNet lemmatizer + Snowball stemmer for better coverage
-        tokens = word_tokenize(cleaned_term)
+        tokens = _tokenize(cleaned_term, lang="en")
         processed_tokens = []
         for token in tokens:
             if token.isalnum():
@@ -54,7 +170,7 @@ def get_lemma(term: str, lang: str = "en") -> str:
     
     else:
         # Other languages: Basic cleaning and normalization
-        tokens = word_tokenize(cleaned_term)
+        tokens = _tokenize(cleaned_term)
         cleaned_tokens = [token.lower() for token in tokens if token.isalnum()]
         return " ".join(cleaned_tokens).strip()
 
@@ -105,7 +221,8 @@ def extract_keywords(text: str, lang: str = "fr", max_keywords: int = 10) -> lis
         
         # Normalize and tokenize
         normalized = normalize_text(text)
-        tokens = word_tokenize(normalized.lower())
+        token_lang = "fr" if lang == "fr" else "en"
+        tokens = _tokenize(normalized.lower(), lang=token_lang)
         
         # Filter tokens: remove stopwords, short words, and get stems/lemmas
         keywords = []

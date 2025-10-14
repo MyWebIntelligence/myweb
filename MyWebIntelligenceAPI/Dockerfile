@@ -7,6 +7,7 @@ ENV PYTHONPATH=/app
 # Installer les dépendances système
 RUN apt-get update && apt-get install -y \
     curl \
+    jq \
     gcc \
     g++ \
     libpq-dev \
@@ -24,6 +25,9 @@ COPY requirements.txt .
 
 # Installer les dépendances Python
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Télécharger les données NLTK
+RUN python -m nltk.downloader punkt
 
 # Copier le code de l'application
 COPY . .

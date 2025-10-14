@@ -2,46 +2,65 @@
 Extracteur de contenu et de métadonnées à partir de HTML brut.
 Adapté de readable_pipeline.py et des fonctions de core.py.
 """
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from bs4 import BeautifulSoup
 import trafilatura
 import httpx
 import asyncio
 import json
+import re
+from urllib.parse import urljoin, urlparse
 
-def get_readable_content(html: str) -> Tuple[str, BeautifulSoup]:
+def get_readable_content(html: str) -> Tuple[str, BeautifulSoup, Optional[str]]:
     """
     Extrait le contenu lisible d'un HTML avec stratégie de fallback en cascade:
-    1. Trafilatura (primary)
-    2. Smart extraction (content heuristics)
-    3. BeautifulSoup (fallback)
+    1. Trafilatura with markdown format (primary)
+    2. BeautifulSoup (fallback)
+
+    Returns:
+        Tuple[readable_text, soup, readable_html] where readable_html is the HTML version from Trafilatura
     """
     soup = BeautifulSoup(html, 'html.parser')
-    
-    # Méthode 1: Trafilatura (preferred)
+
+    # Méthode 1: Trafilatura (preferred) - ALIGNED WITH LEGACY
+    # Extract both markdown and HTML formats for media enrichment
     readable_text = trafilatura.extract(
-        html, 
-        include_comments=False, 
+        html,
+        include_comments=False,
+        include_links=True,
+        include_images=True,
+        output_format='markdown',
         include_tables=True,
         include_formatting=True,
         favor_precision=True
     )
-    
-    if readable_text and len(readable_text) > 200:
-        print("Readable content extracted with Trafilatura.")
-        return readable_text, soup
-    
-    # Méthode 2: Smart extraction avec heuristiques
-    smart_content = _smart_content_extraction(soup)
-    if smart_content and len(smart_content) > 200:
-        print("Readable content extracted with smart heuristics.")
-        return smart_content, soup
 
-    # Méthode 3: BeautifulSoup fallback
-    print("Advanced methods failed, falling back to BeautifulSoup.")
+    readable_html = trafilatura.extract(
+        html,
+        include_comments=False,
+        include_links=True,
+        include_images=True,
+        output_format='html'
+    )
+
+    if readable_text and len(readable_text) > 100:
+        print("Readable content extracted with Trafilatura (markdown format).")
+        return readable_text, soup, readable_html
+
+    # Méthode 2: BeautifulSoup fallback with smart extraction
+    print("Trafilatura failed, falling back to BeautifulSoup with smart extraction.")
+
+    # Try smart extraction first (intelligent heuristics)
+    smart_content = _smart_content_extraction(soup)
+    if smart_content and len(smart_content) > 100:
+        print("Smart extraction succeeded on BeautifulSoup.")
+        return smart_content, soup, None
+
+    # Final fallback: basic text extraction
+    print("Smart extraction failed, using basic text extraction.")
     clean_html(soup)
     text = soup.get_text(separator='\n', strip=True)
-    return text, soup
+    return text, soup, None
 
 def _smart_content_extraction(soup: BeautifulSoup) -> Optional[str]:
     """
@@ -81,12 +100,14 @@ def get_metadata(soup: BeautifulSoup, url: str) -> Dict[str, Any]:
     description = get_description(soup)
     keywords = get_keywords(soup)
     lang = soup.html.get('lang', '') if soup.html else ''
+    canonical_url = get_canonical_url(soup)
 
     return {
         'title': title,
         'description': description,
         'keywords': keywords,
-        'lang': lang
+        'lang': lang,
+        'canonical_url': canonical_url
     }
 
 def get_title(soup: BeautifulSoup) -> Optional[str]:
@@ -128,104 +149,296 @@ def get_keywords(soup: BeautifulSoup) -> Optional[str]:
         return keywords_tag['content'].strip()
     return None
 
+def get_canonical_url(soup: BeautifulSoup) -> Optional[str]:
+    """Extrait l'URL canonique de la page."""
+    # Chercher la balise <link rel="canonical">
+    canonical_tag = soup.find('link', rel='canonical')
+    if canonical_tag and canonical_tag.get('href'):
+        return canonical_tag['href'].strip()
+
+    # Fallback: og:url
+    og_url = soup.find('meta', property='og:url')
+    if og_url and og_url.get('content'):
+        return og_url['content'].strip()
+
+    return None
+
 def clean_html(soup: BeautifulSoup):
     """Supprime les balises inutiles du HTML."""
     for selector in ['script', 'style', 'nav', 'footer', 'aside']:
         for tag in soup.select(selector):
             tag.decompose()
 
-async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = None) -> Tuple[Optional[str], Optional[BeautifulSoup], str]:
+def resolve_url(base_url: str, url: str) -> str:
+    """Resolve relative URL to absolute URL."""
+    if not url or url.startswith('data:'):
+        return url
+    return urljoin(base_url, url)
+
+def enrich_markdown_with_media(markdown_content: str, readable_html: Optional[str], base_url: str) -> Tuple[str, List[Dict[str, str]]]:
     """
-    Extrait le contenu lisible avec fallbacks avancés:
-    1. HTML fourni + Trafilatura
-    2. Smart extraction sur HTML fourni
-    3. Archive.org + Trafilatura
-    4. BeautifulSoup fallback
-    
+    Enrichit le contenu markdown avec les marqueurs IMAGE/VIDEO/AUDIO.
+    Retourne le markdown enrichi et la liste des médias détectés.
+
+    Cette fonction reproduit la logique legacy de _legacy/core.py:1759-1786.
+    """
+    media_list = []
+    media_lines = []
+
+    if readable_html:
+        soup_readable = BeautifulSoup(readable_html, 'html.parser')
+
+        # Extract images
+        for img in soup_readable.find_all('img'):
+            src = img.get('src')
+            if src:
+                resolved_url = resolve_url(base_url, src)
+                media_lines.append(f"![IMAGE]({resolved_url})")
+                media_list.append({'url': resolved_url, 'type': 'img'})
+
+        # Extract videos
+        for video in soup_readable.find_all('video'):
+            src = video.get('src')
+            if src:
+                resolved_url = resolve_url(base_url, src)
+                media_lines.append(f"[VIDEO: {resolved_url}]")
+                media_list.append({'url': resolved_url, 'type': 'video'})
+
+        # Extract audio
+        for audio in soup_readable.find_all('audio'):
+            src = audio.get('src')
+            if src:
+                resolved_url = resolve_url(base_url, src)
+                media_lines.append(f"[AUDIO: {resolved_url}]")
+                media_list.append({'url': resolved_url, 'type': 'audio'})
+
+    # Also extract images from markdown format (for images converted to markdown)
+    img_md_links = re.findall(r'!\[.*?\]\((.*?)\)', markdown_content)
+    for img_url in img_md_links:
+        resolved_url = resolve_url(base_url, img_url)
+        # Avoid duplicates
+        if not any(m['url'] == resolved_url for m in media_list):
+            media_list.append({'url': resolved_url, 'type': 'img'})
+
+    # Append media lines to markdown content
+    enriched_content = markdown_content
+    if media_lines:
+        enriched_content += "\n\n" + "\n".join(media_lines)
+
+    return enriched_content, media_list
+
+def extract_md_links(markdown_content: str) -> List[str]:
+    """
+    Extrait tous les liens markdown du contenu.
+    Retourne une liste d'URLs.
+
+    Cette fonction reproduit extract_md_links() du legacy.
+    """
+    # Extract markdown links: [text](url)
+    md_links = re.findall(r'\[.*?\]\((.*?)\)', markdown_content)
+
+    # Filter out image links (starting with !)
+    links = [link for link in md_links if not link.startswith('!')]
+
+    return links
+
+async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Extrait le contenu lisible avec fallbacks avancés (ALIGNED WITH LEGACY):
+    1. Trafilatura sur HTML fourni (markdown + enrichissement médias)
+    2. Archive.org + Trafilatura (si échec #1)
+    3. BeautifulSoup fallback
+
     Returns:
-        Tuple[content, soup, status] where status indicates which method succeeded
+        Dict with: readable, content (raw HTML), soup, extraction_source, media_list, links
     """
     soup = None
-    
-    # Method 1 & 2: Use provided HTML
+    readable_html = None
+    raw_html = html
+
+    # Method 1: Trafilatura on provided HTML with markdown format
     if html:
         soup = BeautifulSoup(html, 'html.parser')
-        
-        # Try Trafilatura first
+
+        # Extract with Trafilatura in markdown format
         readable_text = trafilatura.extract(
-            html, 
-            include_comments=False, 
+            html,
+            include_comments=False,
+            include_links=True,
+            include_images=True,
+            output_format='markdown',
             include_tables=True,
             include_formatting=True,
             favor_precision=True
         )
-        
-        if readable_text and len(readable_text) > 200:
-            return readable_text, soup, "trafilatura_direct"
-        
-        # Try smart extraction
-        smart_content = _smart_content_extraction(soup)
-        if smart_content and len(smart_content) > 200:
-            return smart_content, soup, "smart_extraction"
-    
-    # Method 3: Archive.org fallback
+
+        readable_html = trafilatura.extract(
+            html,
+            include_comments=False,
+            include_links=True,
+            include_images=True,
+            output_format='html'
+        )
+
+        if readable_text and len(readable_text) > 100:
+            # Enrich markdown with media markers (legacy behavior)
+            enriched_content, media_list = enrich_markdown_with_media(readable_text, readable_html, url)
+            links = extract_md_links(enriched_content)
+
+            # Extract metadata robustly from soup
+            metadata = get_metadata(soup, url)
+
+            return {
+                'readable': enriched_content,
+                'content': raw_html,
+                'soup': soup,
+                'readable_html': readable_html,
+                'extraction_source': 'trafilatura_direct',
+                'media_list': media_list,
+                'links': links,
+                'title': metadata.get('title'),
+                'description': metadata.get('description'),
+                'keywords': metadata.get('keywords'),
+                'language': metadata.get('lang')
+            }
+
+    # Method 2: Archive.org fallback (before BeautifulSoup, aligned with legacy)
     try:
-        archived_content = await _extract_from_archive_org(url)
-        if archived_content:
-            content, archive_soup = archived_content
-            if content and len(content) > 200:
-                return content, archive_soup, "archive_org"
+        archived_result = await _extract_from_archive_org(url)
+        if archived_result and archived_result.get('readable'):
+            return archived_result
     except Exception as e:
         print(f"Archive.org fallback failed for {url}: {e}")
-    
-    # Method 4: BeautifulSoup fallback on original HTML
+
+    # Method 3: BeautifulSoup fallback on original HTML with smart extraction
     if soup:
+        # Extract metadata before any modifications
+        metadata = get_metadata(soup, url)
+
+        # Try smart extraction first (intelligent heuristics)
+        smart_content = _smart_content_extraction(soup)
+        if smart_content and len(smart_content) > 100:
+            return {
+                'readable': smart_content,
+                'content': raw_html,
+                'soup': soup,
+                'readable_html': None,
+                'extraction_source': 'beautifulsoup_smart',
+                'media_list': [],
+                'links': [],
+                'title': metadata.get('title'),
+                'description': metadata.get('description'),
+                'keywords': metadata.get('keywords'),
+                'language': metadata.get('lang')
+            }
+
+        # Final fallback: basic text extraction
         clean_html(soup)
         text = soup.get_text(separator='\n', strip=True)
-        return text, soup, "beautifulsoup_fallback"
-    
-    return None, None, "all_failed"
+        if len(text) > 100:
+            return {
+                'readable': text,
+                'content': raw_html,
+                'soup': soup,
+                'readable_html': None,
+                'extraction_source': 'beautifulsoup_basic',
+                'media_list': [],
+                'links': [],
+                'title': metadata.get('title'),
+                'description': metadata.get('description'),
+                'keywords': metadata.get('keywords'),
+                'language': metadata.get('lang')
+            }
 
-async def _extract_from_archive_org(url: str) -> Optional[Tuple[str, BeautifulSoup]]:
-    """Extract content from Archive.org archived version of the URL."""
+    # All methods failed - still extract metadata if soup is available
+    final_metadata = get_metadata(soup, url) if soup else {}
+    return {
+        'readable': None,
+        'content': raw_html,
+        'soup': soup,
+        'readable_html': None,
+        'extraction_source': 'all_failed',
+        'media_list': [],
+        'links': [],
+        'title': final_metadata.get('title'),
+        'description': final_metadata.get('description'),
+        'keywords': final_metadata.get('keywords'),
+        'language': final_metadata.get('lang')
+    }
+
+async def _extract_from_archive_org(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract content from Archive.org archived version of the URL.
+    ALIGNED WITH LEGACY (_legacy/core.py:1812-1857).
+
+    Uses trafilatura.fetch_url and reproduces full markdown enrichment pipeline.
+    """
     try:
         # Get archived snapshot info
         archive_api_url = f"http://archive.org/wayback/available?url={url}"
-        
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(archive_api_url)
             response.raise_for_status()
             archive_data = response.json()
-            
+
             archived_url = archive_data.get('archived_snapshots', {}).get('closest', {}).get('url')
             if not archived_url:
                 return None
-            
-            # Fetch archived content
-            archived_response = await client.get(archived_url)
-            archived_response.raise_for_status()
-            
-            if 'html' not in archived_response.headers.get('content-type', ''):
+
+            print(f"Archive.org snapshot found: {archived_url}")
+
+            # Use trafilatura.fetch_url (legacy behavior) instead of httpx
+            archived_html = await asyncio.to_thread(trafilatura.fetch_url, archived_url)
+
+            if not archived_html:
                 return None
-                
-            archived_html = archived_response.text
-            
-            # Extract with Trafilatura
+
+            # Extract with Trafilatura in markdown format (legacy behavior)
             extracted_content = trafilatura.extract(
-                archived_html, 
-                include_comments=False, 
+                archived_html,
+                include_comments=False,
+                include_links=True,
+                include_images=True,
+                output_format='markdown',
                 include_tables=True,
                 include_formatting=True,
                 favor_precision=True
             )
-            
+
+            readable_html = trafilatura.extract(
+                archived_html,
+                include_comments=False,
+                include_links=True,
+                include_images=True,
+                output_format='html'
+            )
+
             if extracted_content and len(extracted_content) > 100:
+                # Enrich markdown with media markers (legacy behavior)
+                enriched_content, media_list = enrich_markdown_with_media(extracted_content, readable_html, url)
+                links = extract_md_links(enriched_content)
+
                 soup = BeautifulSoup(archived_html, 'html.parser')
-                return extracted_content, soup
-                
+                metadata = get_metadata(soup, url)
+
+                return {
+                    'readable': enriched_content,
+                    'content': archived_html,
+                    'soup': soup,
+                    'readable_html': readable_html,
+                    'extraction_source': 'archive_org',
+                    'media_list': media_list,
+                    'links': links,
+                    'title': metadata.get('title'),
+                    'description': metadata.get('description'),
+                    'keywords': metadata.get('keywords'),
+                    'language': metadata.get('lang')
+                }
+
     except Exception as e:
         print(f"Error in Archive.org extraction for {url}: {e}")
-        
+
     return None
 
 
@@ -233,35 +446,83 @@ class ContentExtractor:
     """
     Content extractor class that wraps the extraction functions.
     """
-    
+
     def __init__(self):
         pass
-    
-    def get_readable_content(self, html: str) -> Tuple[str, BeautifulSoup]:
+
+    def get_readable_content(self, html: str) -> Tuple[str, BeautifulSoup, Optional[str]]:
         """Extract readable content from HTML."""
         return get_readable_content(html)
-    
+
     def get_metadata(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
         """Extract metadata from BeautifulSoup object."""
         return get_metadata(soup, url)
-    
+
     async def get_readable_content_with_fallbacks(self, url: str, html: Optional[str] = None) -> Dict[str, Any]:
-        """Extract readable content with fallbacks and return structured result."""
-        content, soup, source = await get_readable_content_with_fallbacks(url, html)
-        
-        if not content:
-            return {}
-        
-        # Extract metadata if we have soup
-        metadata = {}
-        if soup:
-            metadata = get_metadata(soup, url)
-        
+        """
+        Extract readable content with fallbacks and return structured result.
+        Returns enriched markdown with media markers and extracted links.
+
+        Metadata priority (LEGACY ALIGNED):
+        1. Trafilatura native metadata (extract_metadata)
+        2. BeautifulSoup meta tags (OG, Twitter, Schema.org)
+        """
+        result = await get_readable_content_with_fallbacks(url, html)
+
+        if not result.get('readable'):
+            return {
+                'readable': None,
+                'content': html or '',
+                'soup': result.get('soup'),
+                'title': url,
+                'description': None,
+                'language': None,
+                'extraction_source': result.get('extraction_source', 'all_failed'),
+                'media_list': [],
+                'links': []
+            }
+
+        # Extract metadata with priority: Trafilatura > BeautifulSoup
+        trafi_metadata = {}
+        bs_metadata = {}
+
+        # 1. Try Trafilatura native metadata first (PRIORITY 1)
+        if html:
+            try:
+                import trafilatura
+                meta_obj = trafilatura.extract_metadata(html)
+                if meta_obj:
+                    trafi_metadata = {
+                        'title': meta_obj.title,
+                        'description': meta_obj.description,
+                        'keywords': ', '.join(meta_obj.tags) if meta_obj.tags else None,
+                        'lang': meta_obj.language
+                    }
+            except Exception:
+                pass
+
+        # 2. BeautifulSoup fallback (PRIORITY 2)
+        if result.get('soup'):
+            bs_metadata = get_metadata(result['soup'], url)
+
+        # 3. Combine with Trafilatura priority
+        final_metadata = {
+            'title': trafi_metadata.get('title') or bs_metadata.get('title') or url,
+            'description': trafi_metadata.get('description') or bs_metadata.get('description'),
+            'keywords': trafi_metadata.get('keywords') or bs_metadata.get('keywords'),
+            'lang': trafi_metadata.get('lang') or bs_metadata.get('lang')
+        }
+
         return {
-            'readable': content,
-            'content': html or '',
-            'title': metadata.get('title'),
-            'description': metadata.get('description'),
-            'language': metadata.get('lang'),
-            'source': source
+            'readable': result['readable'],
+            'content': result.get('content', html or ''),
+            'readable_html': result.get('readable_html'),
+            'soup': result.get('soup'),
+            'title': final_metadata['title'],
+            'description': final_metadata['description'],
+            'keywords': final_metadata['keywords'],
+            'language': final_metadata['lang'],
+            'extraction_source': result.get('extraction_source'),
+            'media_list': result.get('media_list', []),
+            'links': result.get('links', [])
         }

@@ -83,6 +83,10 @@ class ValidationResult(BaseModel):
     completion_tokens: Optional[int] = None
     error_message: Optional[str] = None
 
+    model_config = {
+        "protected_namespaces": (),
+    }
+
 
 class ReadableStats(BaseModel):
     """Statistics for readable processing."""

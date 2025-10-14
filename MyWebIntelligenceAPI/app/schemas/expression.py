@@ -27,10 +27,12 @@ class ExpressionUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     keywords: Optional[str] = None
+    content: Optional[str] = None  # HTML brut (legacy field)
     readable: Optional[str] = None
     relevance: Optional[float] = None
-    http_status: Optional[int] = None
+    http_status: Optional[str] = None  # Changed to string (legacy format)
     lang: Optional[str] = None
+    language: Optional[str] = None  # Alias for lang
     crawled_at: Optional[datetime] = None
     readable_at: Optional[datetime] = None
     published_at: Optional[datetime] = None

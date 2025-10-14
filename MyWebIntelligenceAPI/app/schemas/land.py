@@ -19,6 +19,7 @@ class LandBase(BaseModel):
 # Schéma pour la création d'un Land
 class LandCreate(LandBase):
     lang: List[str] = ["fr"]
+    words: Optional[List[str]] = None
 
 # Schéma pour la mise à jour d'un Land
 class LandUpdate(BaseModel):

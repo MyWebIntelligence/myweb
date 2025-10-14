@@ -70,15 +70,15 @@ class CRUDLand:
         # Auto-peupler le dictionnaire si des mots sont fournis
         if words_data:
             try:
-                from app.services.dictionary_service import DictionaryService
-                dict_service = DictionaryService(db)
-                await dict_service.populate_land_dictionary(db_obj.id, seed_terms=words_data)
-                await db.commit()  # Commit final pour le dictionnaire
+                # Use the simpler add_terms_to_land method which handles duplicates properly
+                await self.add_terms_to_land(db, db_obj.id, words_data)
             except Exception as e:
                 # Log l'erreur mais ne fail pas la création du land
                 import logging
                 logger = logging.getLogger(__name__)
-                logger.error(f"Failed to populate dictionary for land {db_obj.id}: {e}")
+                logger.error(f"Failed to add terms to land {db_obj.id}: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
         
         return db_obj
 
@@ -158,9 +158,18 @@ class CRUDLand:
 
         for term in terms:
             lemma = get_lemma(term, lang_code)
-            result = await db.execute(select(Word).filter(Word.lemma == lemma))
+
+            # Check by exact word first (unique constraint)
+            # Note: Some existing words may have language stored as '["fr"]' instead of 'fr'
+            result = await db.execute(select(Word).filter(Word.word == term))
             word = result.scalars().first()
-            
+
+            # If not found by exact word, check by lemma
+            if not word:
+                result = await db.execute(select(Word).filter(Word.lemma == lemma))
+                word = result.scalars().first()
+
+            # Create word if it doesn't exist
             if not word:
                 word = Word(word=term, lemma=lemma, language=lang_code, frequency=1.0)
                 db.add(word)

@@ -70,8 +70,14 @@ class DictionaryService:
         # Traiter les mots du land
         if raw_terms:
             for word_data in raw_terms:
-                word = (word_data.get('word') or '').strip().lower()
-                lemma = (word_data.get('lemma') or word).strip().lower()
+                if isinstance(word_data, str):
+                    word = word_data.strip().lower()
+                    lemma = word
+                elif isinstance(word_data, dict):
+                    word = (word_data.get('word') or '').strip().lower()
+                    lemma = (word_data.get('lemma') or word).strip().lower()
+                else:
+                    continue
                 
                 if not word:
                     continue
@@ -124,15 +130,29 @@ class DictionaryService:
         """
         # Normaliser les textes
         normalized_word = normalize_text(word)
-        
+
         # Utiliser le processing amélioré pour le lemme
         primary_lang = languages[0] if languages else 'fr'
         processed_lemma = get_lemma(normalized_word, primary_lang) if not lemma else get_lemma(lemma, primary_lang)
-        
+
         if not normalized_word or not processed_lemma:
             return None, False
-        
-        # Chercher le mot existant par lemme (plus efficace pour les mots similaires)
+
+        # FIRST: Check by exact word value (which has unique constraint)
+        result = await self.db.execute(
+            select(Word).where(
+                Word.word == normalized_word,
+                Word.language == primary_lang
+            )
+        )
+        word_obj = result.scalar_one_or_none()
+
+        if word_obj:
+            # Word already exists with exact match
+            logger.debug(f"Word '{normalized_word}' already exists (id={word_obj.id})")
+            return word_obj, False
+
+        # SECOND: Check by lemma (for similar words)
         result = await self.db.execute(
             select(Word).where(
                 Word.lemma == processed_lemma,
@@ -140,21 +160,23 @@ class DictionaryService:
             )
         )
         word_obj = result.scalar_one_or_none()
-        
-        if not word_obj:
-            # Créer un nouveau mot
-            word_obj = Word(
-                word=normalized_word,
-                lemma=processed_lemma,
-                language=primary_lang,
-                frequency=1.0  # Fréquence par défaut
-            )
-            self.db.add(word_obj)
-            await self.db.flush()  # Pour obtenir l'ID
-            logger.debug(f"Created new word: '{normalized_word}' -> lemma: '{processed_lemma}' ({primary_lang})")
-            return word_obj, True
-        
-        return word_obj, False
+
+        if word_obj:
+            # Found by lemma but different word value
+            logger.debug(f"Word found by lemma '{processed_lemma}' (existing word='{word_obj.word}', id={word_obj.id})")
+            return word_obj, False
+
+        # Create new word - no try/except needed since we checked above
+        word_obj = Word(
+            word=normalized_word,
+            lemma=processed_lemma,
+            language=primary_lang,
+            frequency=1.0  # Fréquence par défaut
+        )
+        self.db.add(word_obj)
+        await self.db.flush()  # Pour obtenir l'ID
+        logger.debug(f"Created new word: '{normalized_word}' -> lemma: '{processed_lemma}' ({primary_lang}, id={word_obj.id})")
+        return word_obj, True
     
     async def _add_to_land_dictionary(self, land_id: int, word_id: int) -> Optional[LandDictionary]:
         """Ajoute un mot au dictionnaire d'un land."""
