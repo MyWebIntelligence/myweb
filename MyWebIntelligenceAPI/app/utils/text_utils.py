@@ -9,6 +9,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+try:
+    from langdetect import detect as _langdetect_detect, LangDetectException as _LangDetectException
+except ImportError:  # pragma: no cover - optional dependency
+    _langdetect_detect = None
+    _LangDetectException = None
+
 def analyze_text_metrics(text: str) -> Dict[str, any]:
     """Analyse complète des métriques d'un texte."""
     
@@ -49,44 +55,52 @@ def detect_language(text: str) -> Optional[str]:
     Returns:
         Code ISO 639-1 de la langue (ex: 'fr', 'en', 'es') ou None si échec
     """
-    try:
-        from langdetect import detect, LangDetectException
-
-        # Minimum 20 caractères pour une détection fiable
-        if not text or len(text.strip()) < 20:
-            return None
-
-        # Nettoyer le texte (enlever URLs, emails, etc.)
-        clean_text = re.sub(r'http[s]?://\S+', '', text)
-        clean_text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '', clean_text)
-        clean_text = clean_text.strip()
-
-        if len(clean_text) < 20:
-            return None
-
-        # Détecter la langue
-        detected_lang = detect(clean_text)
-
-        # Normaliser certains codes (langdetect retourne parfois des codes non-standard)
-        lang_mapping = {
-            'zh-cn': 'zh',  # Chinois simplifié
-            'zh-tw': 'zh',  # Chinois traditionnel
-            'no': 'nb',     # Norvégien
-        }
-
-        detected_lang = lang_mapping.get(detected_lang, detected_lang)
-
-        # Valider que c'est un code ISO 639-1 valide (2 lettres)
-        if detected_lang and len(detected_lang) <= 3:
-            logger.debug(f"Language detected: {detected_lang}")
-            return detected_lang
-
+    # Minimum 10 caractères pour une détection fiable (réduit de 20 à 10)
+    if not text or len(text.strip()) < 10:
+        logger.info(f"Text too short for language detection: {len(text.strip()) if text else 0} chars")
         return None
 
-    except (LangDetectException, Exception) as e:
-        # Fallback vers méthode simple si langdetect échoue
-        logger.debug(f"langdetect failed, using fallback method: {e}")
+    # Nettoyer le texte (enlever URLs, emails, etc.)
+    original_length = len(text)
+    clean_text = re.sub(r'http[s]?://\S+', '', text)
+    clean_text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '', clean_text)
+    clean_text = clean_text.strip()
+
+    logger.info(f"Language detection: original={original_length} chars, cleaned={len(clean_text)} chars")
+
+    if len(clean_text) < 10:
+        logger.warning(f"Text too short after cleaning ({len(clean_text)} chars), using fallback")
         return _detect_language_fallback(text)
+
+    if not _langdetect_detect:
+        logger.warning("langdetect library not installed, using fallback method")
+        return _detect_language_fallback(text)
+
+    try:
+        detected_lang = _langdetect_detect(clean_text)
+    except _LangDetectException as e:  # type: ignore[misc]
+        logger.warning(f"LangDetectException: {e}, using fallback method")
+        return _detect_language_fallback(text)
+    except Exception as e:
+        logger.warning(f"Unexpected error in language detection: {e}, using fallback method")
+        return _detect_language_fallback(text)
+
+    # Normaliser certains codes (langdetect retourne parfois des codes non-standard)
+    lang_mapping = {
+        'zh-cn': 'zh',  # Chinois simplifié
+        'zh-tw': 'zh',  # Chinois traditionnel
+        'no': 'nb',     # Norvégien
+    }
+
+    detected_lang = lang_mapping.get(detected_lang, detected_lang)
+
+    # Valider que c'est un code ISO 639-1 valide (2 lettres)
+    if detected_lang and len(detected_lang) <= 3:
+        logger.info(f"Language detected by langdetect: {detected_lang}")
+        return detected_lang
+
+    logger.warning(f"Invalid language code from langdetect: {detected_lang}")
+    return _detect_language_fallback(text)
 
 def _detect_language_fallback(text: str) -> Optional[str]:
     """
@@ -94,7 +108,8 @@ def _detect_language_fallback(text: str) -> Optional[str]:
     Utilisée si langdetect échoue.
     """
     try:
-        if not text or len(text.strip()) < 20:
+        if not text or len(text.strip()) < 10:
+            logger.info(f"Fallback: text too short ({len(text.strip()) if text else 0} chars)")
             return None
 
         # Mots français courants
@@ -114,24 +129,40 @@ def _detect_language_fallback(text: str) -> Optional[str]:
         # Nettoyer et diviser le texte
         words = re.findall(r'\b[a-zA-ZàâäéèêëïîôùûüÿñçÀÂÄÉÈÊËÏÎÔÙÛÜŸÑÇ]+\b', text.lower())
 
-        if len(words) < 5:
+        if len(words) < 3:
+            logger.info(f"Fallback: not enough words ({len(words)})")
+            # Pour du contenu substantiel sans mots reconnus, retourner 'en' par défaut
+            if len(text.strip()) > 50:
+                logger.info("Fallback: defaulting to 'en' for substantial text")
+                return 'en'
             return None
 
         french_score = sum(1 for word in words if word in french_words)
         english_score = sum(1 for word in words if word in english_words)
 
-        # Si suffisamment de mots détectés
-        if french_score + english_score >= 3:
+        logger.info(f"Fallback scores: fr={french_score}, en={english_score}, total_words={len(words)}")
+
+        # Si suffisamment de mots détectés (seuil réduit de 3 à 2)
+        if french_score + english_score >= 2:
             if french_score > english_score:
+                logger.info("Fallback: detected 'fr' by word matching")
                 return 'fr'
             elif english_score > french_score:
+                logger.info("Fallback: detected 'en' by word matching")
                 return 'en'
 
         # Détection par caractères spéciaux français
         french_chars = re.findall(r'[àâäéèêëïîôùûüÿñç]', text.lower())
         if len(french_chars) > len(words) * 0.02:  # 2% de caractères français
+            logger.info(f"Fallback: detected 'fr' by accent chars ({len(french_chars)} accents)")
             return 'fr'
 
+        # Pour du contenu substantiel, retourner 'en' par défaut
+        if len(text.strip()) > 50:
+            logger.info("Fallback: defaulting to 'en' for unidentified text")
+            return 'en'
+
+        logger.info("Fallback: no language detected")
         return None
 
     except Exception as e:

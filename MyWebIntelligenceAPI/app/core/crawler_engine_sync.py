@@ -159,10 +159,23 @@ class SyncCrawlerEngine:
             logger.error("Request error for %s: %s", expr_url, exc)
             http_status_code = 0
 
+        # Extract HTTP headers: Last-Modified and ETag
+        last_modified_str = None
+        etag_str = None
+        if http_status_code and http_status_code < 400:
+            try:
+                if hasattr(response, 'headers'):
+                    last_modified_str = response.headers.get('last-modified', None)
+                    etag_str = response.headers.get('etag', None)
+            except Exception:
+                pass
+
         update_data: Dict[str, Optional[str]] = {
             "http_status": http_status_code,
             "content_type": content_type,
             "content_length": content_length,
+            "last_modified": last_modified_str,
+            "etag": etag_str,
             "crawled_at": datetime.utcnow(),
         }
 
@@ -195,7 +208,9 @@ class SyncCrawlerEngine:
             'title': extraction_result.get('title', expr_url),
             'description': extraction_result.get('description'),
             'keywords': extraction_result.get('keywords'),
-            'lang': extraction_result.get('language')
+            'lang': extraction_result.get('language'),
+            'canonical_url': extraction_result.get('canonical_url'),
+            'published_at': extraction_result.get('published_at')
         }
 
         # Debug logging
@@ -224,14 +239,27 @@ class SyncCrawlerEngine:
             html_lang = metadata.get("lang") or metadata.get("language")
             final_lang = detected_lang or html_lang
 
+            # Logging détaillé pour debug
+            logger.info(f"Language detection for {expr_url}: detected_lang={detected_lang}, html_lang={html_lang}, final_lang={final_lang}, word_count={word_count}")
+
+            # Parse published_at if it's a string (from meta tags)
+            published_at = None
+            if metadata.get("published_at"):
+                try:
+                    from dateutil import parser as date_parser
+                    published_at = date_parser.parse(metadata["published_at"])
+                except Exception:
+                    pass
+
             update_data.update(
                 {
                     "title": metadata.get("title"),
                     "description": metadata.get("description"),
                     "keywords": metadata.get("keywords"),
-                    "language": final_lang,
+                    "lang": final_lang,  # FIXED: Use 'lang' to match SQLAlchemy attribute
                     "readable": readable_content,
                     "canonical_url": metadata.get("canonical_url"),
+                    "published_at": published_at,
                     "word_count": word_count,
                     "reading_time": reading_time,
                 }
@@ -248,12 +276,12 @@ class SyncCrawlerEngine:
             temp_expr = TempExpr(metadata.get("title"), readable_content, expr.id)
             try:
                 relevance = asyncio.run(
-                    text_processing.expression_relevance(land_dict, temp_expr, metadata_lang or "fr")
+                    text_processing.expression_relevance(land_dict, temp_expr, final_lang or "fr")
                 )
             except RuntimeError:
                 loop = asyncio.new_event_loop()
                 relevance = loop.run_until_complete(
-                    text_processing.expression_relevance(land_dict, temp_expr, metadata_lang or "fr")
+                    text_processing.expression_relevance(land_dict, temp_expr, final_lang or "fr")
                 )
                 loop.close()
             update_data["relevance"] = relevance

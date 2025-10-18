@@ -14,13 +14,13 @@ def create_admin_user():
     hashed_password = pwd_context.hash("changethispassword")
     
     try:
-        # Connexion à PostgreSQL
+        # Connexion à PostgreSQL (paramètres Docker)
         conn = psycopg2.connect(
-            host="localhost",
+            host="db",
             port="5432",
-            database="mywebintelligence",
-            user="postgres",
-            password="password"
+            database="mwi_db",
+            user="mwi_user",
+            password="mwi_password"
         )
         
         cursor = conn.cursor()

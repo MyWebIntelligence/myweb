@@ -26,8 +26,8 @@ COPY requirements.txt .
 # Installer les dépendances Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Télécharger les données NLTK
-RUN python -m nltk.downloader punkt
+# Télécharger les données NLTK (punkt et punkt_tab pour tokenisation)
+RUN python -m nltk.downloader punkt punkt_tab || python -m nltk.downloader punkt
 
 # Copier le code de l'application
 COPY . .

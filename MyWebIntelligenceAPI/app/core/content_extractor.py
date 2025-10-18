@@ -101,13 +101,15 @@ def get_metadata(soup: BeautifulSoup, url: str) -> Dict[str, Any]:
     keywords = get_keywords(soup)
     lang = soup.html.get('lang', '') if soup.html else ''
     canonical_url = get_canonical_url(soup)
+    published_at = get_published_date(soup)
 
     return {
         'title': title,
         'description': description,
         'keywords': keywords,
         'lang': lang,
-        'canonical_url': canonical_url
+        'canonical_url': canonical_url,
+        'published_at': published_at
     }
 
 def get_title(soup: BeautifulSoup) -> Optional[str]:
@@ -160,6 +162,39 @@ def get_canonical_url(soup: BeautifulSoup) -> Optional[str]:
     og_url = soup.find('meta', property='og:url')
     if og_url and og_url.get('content'):
         return og_url['content'].strip()
+
+    return None
+
+def get_published_date(soup: BeautifulSoup) -> Optional[str]:
+    """
+    Extrait la date de publication de la page avec une chaîne de fallbacks.
+
+    Retourne la date au format ISO 8601 string ou None.
+    """
+    # Priority 1: article:published_time (Open Graph)
+    published_time = soup.find('meta', property='article:published_time')
+    if published_time and published_time.get('content'):
+        return published_time['content'].strip()
+
+    # Priority 2: datePublished (Schema.org)
+    date_published = soup.find('meta', attrs={'itemprop': 'datePublished'})
+    if date_published and date_published.get('content'):
+        return date_published['content'].strip()
+
+    # Priority 3: dc.date (Dublin Core)
+    dc_date = soup.find('meta', attrs={'name': 'dc.date'})
+    if dc_date and dc_date.get('content'):
+        return dc_date['content'].strip()
+
+    # Priority 4: date (generic meta tag)
+    date_meta = soup.find('meta', attrs={'name': 'date'})
+    if date_meta and date_meta.get('content'):
+        return date_meta['content'].strip()
+
+    # Priority 5: published_time (generic)
+    published = soup.find('meta', attrs={'name': 'published_time'})
+    if published and published.get('content'):
+        return published['content'].strip()
 
     return None
 
@@ -299,7 +334,9 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
                 'title': metadata.get('title'),
                 'description': metadata.get('description'),
                 'keywords': metadata.get('keywords'),
-                'language': metadata.get('lang')
+                'language': metadata.get('lang'),
+                'canonical_url': metadata.get('canonical_url'),
+                'published_at': metadata.get('published_at')
             }
 
     # Method 2: Archive.org fallback (before BeautifulSoup, aligned with legacy)
@@ -329,7 +366,9 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
                 'title': metadata.get('title'),
                 'description': metadata.get('description'),
                 'keywords': metadata.get('keywords'),
-                'language': metadata.get('lang')
+                'language': metadata.get('lang'),
+                'canonical_url': metadata.get('canonical_url'),
+                'published_at': metadata.get('published_at')
             }
 
         # Final fallback: basic text extraction
@@ -347,7 +386,9 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
                 'title': metadata.get('title'),
                 'description': metadata.get('description'),
                 'keywords': metadata.get('keywords'),
-                'language': metadata.get('lang')
+                'language': metadata.get('lang'),
+                'canonical_url': metadata.get('canonical_url'),
+                'published_at': metadata.get('published_at')
             }
 
     # All methods failed - still extract metadata if soup is available
@@ -363,7 +404,9 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
         'title': final_metadata.get('title'),
         'description': final_metadata.get('description'),
         'keywords': final_metadata.get('keywords'),
-        'language': final_metadata.get('lang')
+        'language': final_metadata.get('lang'),
+        'canonical_url': final_metadata.get('canonical_url'),
+        'published_at': final_metadata.get('published_at')
     }
 
 async def _extract_from_archive_org(url: str) -> Optional[Dict[str, Any]]:
@@ -433,7 +476,9 @@ async def _extract_from_archive_org(url: str) -> Optional[Dict[str, Any]]:
                     'title': metadata.get('title'),
                     'description': metadata.get('description'),
                     'keywords': metadata.get('keywords'),
-                    'language': metadata.get('lang')
+                    'language': metadata.get('lang'),
+                    'canonical_url': metadata.get('canonical_url'),
+                    'published_at': metadata.get('published_at')
                 }
 
     except Exception as e:
@@ -496,7 +541,8 @@ class ContentExtractor:
                         'title': meta_obj.title,
                         'description': meta_obj.description,
                         'keywords': ', '.join(meta_obj.tags) if meta_obj.tags else None,
-                        'lang': meta_obj.language
+                        'lang': meta_obj.language,
+                        'published_at': meta_obj.date  # Trafilatura extrait la date de publication
                     }
             except Exception:
                 pass
@@ -510,7 +556,9 @@ class ContentExtractor:
             'title': trafi_metadata.get('title') or bs_metadata.get('title') or url,
             'description': trafi_metadata.get('description') or bs_metadata.get('description'),
             'keywords': trafi_metadata.get('keywords') or bs_metadata.get('keywords'),
-            'lang': trafi_metadata.get('lang') or bs_metadata.get('lang')
+            'lang': trafi_metadata.get('lang') or bs_metadata.get('lang'),
+            'published_at': trafi_metadata.get('published_at') or bs_metadata.get('published_at'),
+            'canonical_url': bs_metadata.get('canonical_url')  # Canonical URL vient toujours de BeautifulSoup
         }
 
         return {
@@ -522,6 +570,8 @@ class ContentExtractor:
             'description': final_metadata['description'],
             'keywords': final_metadata['keywords'],
             'language': final_metadata['lang'],
+            'published_at': final_metadata['published_at'],
+            'canonical_url': final_metadata['canonical_url'],
             'extraction_source': result.get('extraction_source'),
             'media_list': result.get('media_list', []),
             'links': result.get('links', [])

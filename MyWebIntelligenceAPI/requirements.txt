@@ -7,7 +7,6 @@ pydantic-settings==2.1.0
 # Base de données
 sqlalchemy==2.0.23
 asyncpg==0.29.0
-alembic==1.13.0
 
 # ORM et requêtes async
 psycopg2-binary==2.9.9
@@ -67,6 +66,7 @@ python-igraph==0.11.3  # Graphes alternatifs
 # Utilitaires
 email-validator==2.1.1
 python-dotenv==1.0.0
+python-dateutil==2.8.2  # Pour le parsing de dates
 pytz==2023.3
 pyyaml==6.0.1
 rich==13.7.0

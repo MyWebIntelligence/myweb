@@ -267,7 +267,7 @@ Les **deux dernières expressions** doivent avoir :
 
 - **Documentation** :
   - `.claude/AGENTS.md` (section "Double Crawler")
-  - `.claude/CORRECTIONS_EXTRACTION_METADATA.md`
+  - `.claude/CORRECTIONS_PARITÉ_LEGACY.md`
 
 ---
 

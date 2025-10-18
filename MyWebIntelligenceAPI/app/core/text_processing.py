@@ -72,20 +72,19 @@ def _ensure_nltk_tokenizers() -> bool:
     except Exception:
         pass
 
-    ok = True
-    for resource in ("punkt", "punkt_tab"):
+    # Only punkt is required for word_tokenize, punkt_tab is optional
+    try:
+        nltk.data.find("tokenizers/punkt")
+        return True
+    except Exception as exc:
+        if isinstance(exc, zipfile.BadZipFile):
+            _cleanup_nltk_resource("punkt")
         try:
-            nltk.data.find(f"tokenizers/{resource}")
-            continue
-        except Exception as exc:
-            if isinstance(exc, zipfile.BadZipFile):
-                _cleanup_nltk_resource(resource)
-            try:
-                nltk.download(resource, quiet=True)
-                nltk.data.find(f"tokenizers/{resource}")
-            except Exception:
-                ok = False
-    return ok
+            nltk.download("punkt", quiet=True)
+            nltk.data.find("tokenizers/punkt")
+            return True
+        except Exception:
+            return False
 
 
 def _simple_word_tokenize(text: str) -> List[str]:

@@ -2,6 +2,19 @@
 
 MyWebIntelligence est une API FastAPI encapsulant les fonctionnalités du crawler MyWebIntelligencePython. Elle permet l'intégration avec MyWebClient et ouvre la voie à un déploiement SaaS scalable.
 
+## 📚 Documentation active
+
+- [INDEX_DOCUMENTATION.md](INDEX_DOCUMENTATION.md) — plan de lecture consolidé & statuts
+- [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md) — synthèse décisionnelle
+- [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md) — audit Legacy → API
+- [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md) — détails techniques (métadonnées & HTML)
+- [Transfert_readable.md](Transfert_readable.md) — suivi du pipeline readable
+- [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md) — schéma d'extraction
+- [METADATA_FIXES.md](METADATA_FIXES.md) — journal détaillé des corrections métadonnées
+- [CORRECTIONS_FINALES.md](CORRECTIONS_FINALES.md) — synthèse + checklist de validation
+- [compare_addterms_analysis.md](compare_addterms_analysis.md) — analyse AddTerms & pertinence
+- [AGENTS.md](AGENTS.md) — checklists incidents (double crawler, init DB, dictionnaire)
+
 ## 🎯 Concepts Clés
 
 ### Qu'est-ce qu'un "Land" ?
@@ -1019,4 +1032,3 @@ This document outlines the architecture of the MyWebIntelligenceAPI codebase and
 - Automated tests live in `tests/` with dedicated directories for unit, integration, API regression, robustness, and performance suites; `tests/legacy/` preserves earlier workflows for parity checks.
 - Python smoke scripts (`tests/manual/`) and Bash-based validation flows (`scripts/manual/`) provide reproducible end-to-end diagnostics for developers.
 - Shared fixtures (`tests/data/test.db`) and helpers (`tests/utils.py`) consolidate setup logic, keeping suites consistent with production behaviours.
-

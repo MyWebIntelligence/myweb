@@ -38,10 +38,7 @@ services:
       CELERY_AUTOSCALE: ${CELERY_AUTOSCALE:-}
     volumes:
       - ./MyWebIntelligenceAPI:/app
-    command: >
-      sh -c "cd /app &&
-             alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
   celery_worker:
     build:
@@ -61,10 +58,7 @@ services:
       CELERY_AUTOSCALE: ${CELERY_AUTOSCALE:-}
     volumes:
       - ./MyWebIntelligenceAPI:/app
-    command: >
-      sh -c "cd /app &&
-             alembic upgrade head &&
-             celery -A app.core.celery_app worker --loglevel=info"
+    command: celery -A app.core.celery_app worker --loglevel=info
 
 volumes:
   postgres_data:

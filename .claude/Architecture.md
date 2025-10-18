@@ -1,6 +1,7 @@
 # MyWebIntelligenceAPI Architecture
 
-This document outlines the architecture of the MyWebIntelligenceAPI codebase and the runtime responsibilities of each module.
+This document outlines the architecture of the MyWebIntelligenceAPI codebase and the runtime responsibilities of each module.  
+For the full documentation map and current status of parity work, refer to `INDEX_DOCUMENTATION.md`.
 
 ## 1. Repository Layout
 - `app/` FastAPI application package (described in section 2).

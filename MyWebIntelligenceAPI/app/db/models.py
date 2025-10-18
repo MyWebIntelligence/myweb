@@ -216,11 +216,8 @@ class Expression(Base):
     lang = Column("language", String(10), nullable=True)
     word_count = Column(Integer, nullable=True)
     reading_time = Column(Integer, nullable=True)  # En minutes
-    
+
     # Métadonnées SEO
-    meta_title = Column(Text, nullable=True)
-    meta_description = Column(Text, nullable=True)
-    meta_keywords = Column(Text, nullable=True)
     canonical_url = Column(Text, nullable=True)
     valid_llm = Column("validllm", String(3), nullable=True)
     valid_model = Column("validmodel", String(100), nullable=True)

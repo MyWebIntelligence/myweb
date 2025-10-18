@@ -197,10 +197,13 @@ class CrawlerEngine:
             html_lang = extraction_result.get('language')
             final_lang = detected_lang or html_lang
 
+            # Logging détaillé pour debug
+            logger.info(f"Language detection for {expr_url}: detected_lang={detected_lang}, html_lang={html_lang}, final_lang={final_lang}, word_count={word_count}")
+
             update_data["title"] = extraction_result.get('title', expr_url)
             update_data["description"] = extraction_result.get('description')
             update_data["keywords"] = extraction_result.get('keywords')
-            update_data["language"] = final_lang
+            update_data["lang"] = final_lang  # FIXED: Use 'lang' to match SQLAlchemy attribute
             update_data["readable"] = readable_content
             update_data["canonical_url"] = extraction_result.get('canonical_url')
             update_data["word_count"] = word_count

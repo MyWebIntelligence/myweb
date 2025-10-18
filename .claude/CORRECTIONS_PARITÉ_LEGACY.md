@@ -1,7 +1,9 @@
-# Corrections: Extraction Robuste des Métadonnées et du HTML Complet
+# Corrections Parité Legacy – Métadonnées & HTML
 
-**Date**: 14 octobre 2025
-**Objectif**: S'assurer que lors du crawl, les métadonnées (title, description, keywords) et le contenu HTML complet sont systématiquement extraits et sauvegardés.
+**Dernière mise à jour**: 14 octobre 2025 (revue 18 octobre 2025)  
+**Périmètre**: Garantir que la pipeline de crawl aligne l'API sur le comportement legacy en stockant systématiquement les métadonnées (title, description, keywords, lang) et le HTML complet (`content`).
+
+> Pour le récapitulatif produit, voir `RÉSUMÉ_CORRECTIONS_17OCT2025.md`. Les décisions d'architecture globales sont décrites dans `TRANSFERT_API_CRAWL.md` et `CHAÎNE_FALLBACKS.md`.
 
 ---
 

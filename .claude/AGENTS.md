@@ -67,6 +67,84 @@ docker exec mywebclient-db-1 psql -U mwi_user -d mwi_db -c \
 
 ---
 
+## 🔴 ⚠️ ERREUR CATASTROPHIQUE - DATABASE INITIALIZATION ⚠️ 🔴
+
+### **INCIDENT DU 17 OCTOBRE 2025 : 2 HEURES PERDUES SUR ALEMBIC**
+
+**❌ CE QUI A ÉTÉ FAIT (MAUVAIS) :**
+- Suppression d'Alembic (correct - pas de prod donc pas de migrations)
+- Création d'un script `init_db.py` externe pour créer les tables
+- 2 HEURES de debug sur des problèmes de race conditions, transactions, rollbacks...
+- Complexification avec try/catch, checkfirst, isolation levels, etc.
+
+**✅ LA SOLUTION SIMPLE QUI AURAIT DÛ ÊTRE FAITE DÈS LE DÉBUT :**
+```python
+# Dans app/main.py
+@app.on_event("startup")
+async def startup_event():
+    """Créer les tables au démarrage"""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    autocommit_engine = create_async_engine(
+        settings.DATABASE_URL,
+        isolation_level="AUTOCOMMIT"  # ← CLÉ : évite rollback sur erreur
+    )
+    try:
+        async with autocommit_engine.connect() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        print("✅ Tables créées", flush=True)  # ← flush=True OBLIGATOIRE
+    except Exception as e:
+        if "already exists" in str(e):
+            print("✅ Tables déjà existantes", flush=True)
+        else:
+            raise
+    finally:
+        await autocommit_engine.dispose()
+```
+
+### **LEÇONS APPRISES :**
+
+1. **TOUJOURS choisir la solution la PLUS SIMPLE**
+   - ❌ Script externe → race conditions, gestion d'erreurs complexe
+   - ✅ Startup event FastAPI → natif, simple, fonctionne
+
+2. **AUTOCOMMIT est OBLIGATOIRE pour les DDL**
+   - Sans AUTOCOMMIT : une erreur sur un index rollback TOUTES les tables
+   - Avec AUTOCOMMIT : chaque CREATE TABLE est commité immédiatement
+   - **Résultat observé** : "Tables déjà existantes" alors qu'aucune table n'existe !
+
+3. **Logging FastAPI : utiliser `print(flush=True)`**
+   - `logger.info()` ne s'affiche PAS si le niveau de logging n'est pas configuré
+   - `print()` sans flush peut être bufferisé
+   - **Solution** : `print("message", flush=True)`
+
+4. **Ne PAS utiliser de transactions pour CREATE TABLE**
+   - `engine.begin()` → transaction → rollback sur erreur
+   - `engine.connect()` avec AUTOCOMMIT → chaque DDL commitée
+
+5. **Pas de production = Pas de migrations Alembic**
+   - Supprimer Alembic complètement
+   - Créer tables automatiquement au startup
+   - Plus simple, plus maintenable
+
+### **Checklist pour Initialisation DB :**
+
+- [ ] ✅ Créer tables dans `@app.on_event("startup")` de main.py
+- [ ] ✅ Utiliser `isolation_level="AUTOCOMMIT"`
+- [ ] ✅ Utiliser `print(flush=True)` pour débugger
+- [ ] ✅ Wrapper les erreurs "already exists" sans faire crasher
+- [ ] ✅ Tester avec `docker compose down -v && docker compose up -d`
+- [ ] ✅ Vérifier les tables : `docker exec db psql -U user -d db -c "\dt"`
+
+### **Erreur de Diagnostic :**
+
+**Symptôme** : "Tables déjà existantes" dans les logs mais `\dt` montre 0 tables
+
+**Cause** : Transaction rollbackée à cause d'une erreur sur un index, MAIS l'exception "already exists" était catchée, donnant l'impression que tout allait bien.
+
+**Solution** : AUTOCOMMIT pour que chaque CREATE soit commitée même si un index échoue ensuite.
+
+---
+
 ## 🎯 Concepts Clés
 
 ### Qu'est-ce qu'un "Land" ?
@@ -744,40 +822,73 @@ OPENROUTER_API_KEY=<pour-analyse-sémantique>
 
 ## 🚀 TEST RAPIDE COMPLET - SCRIPT AUTOMATISÉ
 
-### 🔥 Script de Test Robuste Anti-Erreurs (2 minutes)
+### ✅ Script de Test Crawl SYNC (RECOMMANDÉ - 1 minute)
+
+**Localisation**: `MyWebIntelligenceAPI/tests/test-crawl-simple.sh`
+
+Ce script teste le **crawl synchrone** des 5 URLs Lecornu **sans les fonctionnalités async bugguées**.
 
 ```bash
 #!/bin/bash
-# Test complet crawl + analyse média ASYNC Celery - AGENTS.md
-# Version robuste qui évite les pièges courants
+# Test SIMPLE crawl sync - 5 URLs Lecornu
+# Sans media analysis async ni readable pipeline
 
-# Fonction pour renouveler le token (expire rapidement)
 get_fresh_token() {
     TOKEN=$(curl -s -X POST "http://localhost:8000/api/v1/auth/login" \
       -H "Content-Type: application/x-www-form-urlencoded" \
-      -d "username=admin@example.com&password=changeme" | jq -r .access_token)
+      -d "username=admin@example.com&password=changethispassword" | jq -r .access_token)
     if [ "$TOKEN" = "null" ] || [ -z "$TOKEN" ]; then
         echo "❌ Échec authentification"
         exit 1
     fi
 }
 
-echo "🔧 1/7 - Vérification serveur..."
+echo "🔧 1/5 - Vérification serveur..."
 if ! curl -s -w "%{http_code}" "http://localhost:8000/" -o /dev/null | grep -q "200"; then
-    echo "❌ Serveur API non accessible. Lancez: docker compose up -d"
+    echo "❌ Serveur API non accessible"
     exit 1
 fi
 
-echo "🔑 2/7 - Authentification..."
+echo "🔑 2/5 - Authentification..."
 get_fresh_token
-echo "✅ Token obtenu: ${TOKEN:0:20}..."
+echo "✅ Token: ${TOKEN:0:20}..."
 
-echo "🏗️ 3/7 - Création land avec URLs intégrées..."
-# ASTUCE: URLs directement dans start_urls (l'endpoint /urls est bugué)
+echo "🏗️ 3/5 - Création land..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LECORNU_FILE="${SCRIPT_DIR}/../scripts/data/lecornu.txt"
+
+if [ ! -f "$LECORNU_FILE" ]; then
+    echo "❌ Fichier lecornu.txt non trouvé"
+    exit 1
+fi
+
+TEMP_JSON=$(mktemp)
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+cat > "$TEMP_JSON" <<EOF
+{
+  "name": "test_lecornu_${TIMESTAMP}",
+  "description": "Test crawl sync Lecornu - ${TIMESTAMP}",
+  "start_urls": [
+EOF
+
+head -n 5 "$LECORNU_FILE" | while IFS= read -r url; do
+    if [ -n "$url" ]; then
+        echo "    \"$url\"," >> "$TEMP_JSON"
+    fi
+done
+
+sed -i '' '$ s/,$//' "$TEMP_JSON" 2>/dev/null || sed -i '$ s/,$//' "$TEMP_JSON"
+cat >> "$TEMP_JSON" <<EOF
+
+  ]
+}
+EOF
+
 LAND_ID=$(curl -s -X POST "http://localhost:8000/api/v2/lands/" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"test_complet_media","description":"Test crawl + analyse média","start_urls":["https://www.lemonde.fr/politique/article/2025/10/11/emmanuel-macron-maintient-sebastien-lecornu-a-matignon-malgre-l-hostilite-de-l-ensemble-de-la-classe-politique_6645724_823448.html"]}' | jq -r '.id')
+  -d @"$TEMP_JSON" | jq -r '.id')
+rm -f "$TEMP_JSON"
 
 if [ "$LAND_ID" = "null" ] || [ -z "$LAND_ID" ]; then
     echo "❌ Échec création land"
@@ -785,19 +896,19 @@ if [ "$LAND_ID" = "null" ] || [ -z "$LAND_ID" ]; then
 fi
 echo "✅ Land créé: LAND_ID=$LAND_ID"
 
-echo "📝 4/7 - Ajout mots-clés (OBLIGATOIRE pour pertinence)..."
-get_fresh_token  # Token peut expirer
+echo "📝 4/5 - Ajout mots-clés..."
+get_fresh_token
 curl -s -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/terms" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"terms": ["lecornu", "sebastien", "macron", "matignon"]}' > /dev/null
 
-echo "🕷️ 5/7 - Lancement crawl..."
-get_fresh_token  # Renouveler avant chaque action importante
+echo "🕷️ 5/5 - Lancement crawl SYNC..."
+get_fresh_token
 CRAWL_RESULT=$(curl -s -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/crawl" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"limit": 3}' --max-time 60)
+  -d '{"limit": 5}' --max-time 120)
 
 JOB_ID=$(echo "$CRAWL_RESULT" | jq -r '.job_id')
 if [ "$JOB_ID" = "null" ] || [ -z "$JOB_ID" ]; then
@@ -806,128 +917,145 @@ if [ "$JOB_ID" = "null" ] || [ -z "$JOB_ID" ]; then
 fi
 echo "✅ Crawl lancé: JOB_ID=$JOB_ID"
 
-echo "⏳ 6/7 - Attente crawl (45s)..."
-sleep 45
-
-echo "🎨 7/8 - Test analyse média ASYNC avec Celery..."
-get_fresh_token  # Token frais pour dernière étape
-ASYNC_RESULT=$(curl -s -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis-async" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"depth": 0, "minrel": 0.0}')
-
-ASYNC_JOB_ID=$(echo "$ASYNC_RESULT" | jq -r '.job_id')
-CELERY_TASK_ID=$(echo "$ASYNC_RESULT" | jq -r '.celery_task_id')
-
-if [ "$ASYNC_JOB_ID" = "null" ]; then
-    echo "❌ Échec analyse async: $ASYNC_RESULT"
-    exit 1
-fi
-
-echo "✅ Analyse média ASYNC lancée:"
-echo "  - Job ID: $ASYNC_JOB_ID"
-echo "  - Celery Task: $CELERY_TASK_ID"
-
-echo "📖 8/8 - Test pipeline Readable (NOUVEAU)..."
-get_fresh_token  # Token frais pour dernière étape
-READABLE_RESULT=$(curl -s -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/readable" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 5, "depth": 1, "merge_strategy": "smart_merge"}' \
-  --max-time 120)
-
-READABLE_JOB_ID=$(echo "$READABLE_RESULT" | jq -r '.job_id')
-READABLE_TASK_ID=$(echo "$READABLE_RESULT" | jq -r '.celery_task_id')
-
-if [ "$READABLE_JOB_ID" = "null" ]; then
-    echo "❌ Échec pipeline readable: $READABLE_RESULT"
-    # Ne pas exit ici, c'est un test de la nouvelle fonctionnalité
-else
-    echo "✅ Pipeline Readable lancé:"
-    echo "  - Job ID: $READABLE_JOB_ID"
-    echo "  - Celery Task: $READABLE_TASK_ID"
-fi
+echo ""
+echo "⏳ Attente fin du crawl (60s)..."
+sleep 60
 
 echo ""
-echo "📋 SUIVI LOGS CELERY (20s):"
-echo "docker logs mywebclient-celery_worker-1 --tail=10 -f"
-echo ""
-docker logs mywebclient-celery_worker-1 --tail=10 -f &
-TAIL_PID=$!
-sleep 20
-kill $TAIL_PID 2>/dev/null
+echo "📊 Vérification résultats..."
+get_fresh_token
+STATS=$(curl -s "http://localhost:8000/api/v2/lands/${LAND_ID}/stats" \
+  -H "Authorization: Bearer $TOKEN")
 
 echo ""
-echo "🎯 RÉSUMÉ FINAL:"
-echo "- Land ID: $LAND_ID"
-echo "- Crawl Job: $JOB_ID"
-echo "- Media Analysis Job: $ASYNC_JOB_ID" 
-echo "- Readable Processing Job: $READABLE_JOB_ID"
-echo "- Celery Tasks: $CELERY_TASK_ID, $READABLE_TASK_ID"
+echo "🎯 RÉSULTATS:"
+echo "$STATS" | jq '{
+  land_id: .land_id,
+  land_name: .land_name,
+  total_expressions: .total_expressions,
+  approved_expressions: .approved_expressions,
+  total_links: .total_links,
+  total_media: .total_media
+}'
+
 echo ""
-echo "🔍 Commandes utiles:"
-echo "# Statut job: curl -H \"Authorization: Bearer \$TOKEN\" \"http://localhost:8000/api/v2/jobs/${ASYNC_JOB_ID}\""
-echo "# Statut readable: curl -H \"Authorization: Bearer \$TOKEN\" \"http://localhost:8000/api/v2/jobs/${READABLE_JOB_ID}\""
-echo "# Stats land: curl -H \"Authorization: Bearer \$TOKEN\" \"http://localhost:8000/api/v2/lands/${LAND_ID}/stats\""
-echo "# Logs Celery: docker logs mywebclient-celery_worker-1 --tail=20 -f"
+echo "✅ Test terminé!"
+echo "Land ID: $LAND_ID"
+echo "Job ID: $JOB_ID"
 ```
 
-### Utilisation Rapide
-```bash
-# Copier-coller et exécuter :
-curl -s https://raw.githubusercontent.com/MyWebIntelligence/scripts/test-complet.sh | bash
+**Résultats Attendus:**
+```
+✅ URLs Processed: 5
+✅ Errors: 0
+✅ Duration: ~50 seconds
+✅ Content extrait: ~50,000 caractères
+```
 
-# OU créer le fichier localement :
-# 1. Copier le script ci-dessus dans test-crawl.sh
-# 2. chmod +x test-crawl.sh && ./test-crawl.sh
+### Utilisation
+```bash
+# Depuis la racine du projet
+./MyWebIntelligenceAPI/tests/test-crawl-simple.sh
+
+# Vérifier les logs Celery
+docker logs mywebclient-celery_worker-1 --tail=50 | grep "CRAWL COMPLETED" -A 5
+```
+
+---
+
+### ⚠️ Script Complet avec Async (DÉPRÉCIÉ - contient des bugs)
+
+Le script original avec analyse média async et pipeline readable contient des bugs asyncio et n'est **pas recommandé** pour le moment.
+
+**Problèmes connus:**
+- ❌ `RuntimeError: Task got Future attached to a different loop` dans media analysis async
+- ❌ Pipeline Readable utilise des URLs de test hardcodées (example.com, httpbin.org)
+- ❌ Erreurs `InterfaceError: another operation is in progress` dans les batch tasks
+
+**Script disponible**: `MyWebIntelligenceAPI/tests/test-crawl.sh` (pour référence uniquement)
+
 ```
 
 ## 🐛 CORRECTIONS CRITIQUES AGENTS - Leçons Apprises
 
 ### ❌ **Erreurs Fréquentes à Éviter**
 
-#### 1. **Bug job_id** (RÉSOLU)
+#### 1. **Bug `metadata_lang` non défini** (RÉSOLU - 2025-10-17)
+- **Problème** : `name 'metadata_lang' is not defined` lors du crawl
+- **Cause** : Variable renommée de `metadata_lang` → `final_lang` mais usage ancien non mis à jour
+- **Fichier** : `/app/app/core/crawler_engine_sync.py:251,256`
+- **Fix** : Remplacer `metadata_lang` par `final_lang` dans l'appel à `expression_relevance()`
+- **Impact** : 100% des URLs échouaient avant le fix
+
+**Code corrigé:**
+```python
+# AVANT (buggué)
+relevance = asyncio.run(
+    text_processing.expression_relevance(land_dict, temp_expr, metadata_lang or "fr")
+)
+
+# APRÈS (corrigé)
+relevance = asyncio.run(
+    text_processing.expression_relevance(land_dict, temp_expr, final_lang or "fr")
+)
+```
+
+#### 2. **Bug job_id** (RÉSOLU)
 - **Problème** : `job_id should be a valid integer [input_value=None]`
 - **Cause** : `/app/api/v2/endpoints/lands_v2.py:582` cherchait `"id"` au lieu de `"job_id"`
 - **Fix** : `job_payload.get("id")` → `job_payload.get("job_id")`
 
-#### 2. **Tokens JWT Expirent Rapidement** ⚠️
+#### 3. **Tokens JWT Expirent Rapidement** ⚠️
 - **Problème** : `Could not validate credentials` après quelques minutes
 - **Solution** : Fonction `get_fresh_token()` avant chaque appel critique
 - **Astuce** : Renouveler systématiquement avant crawl/analyse
 
-#### 3. **Endpoint `/urls` Bugué** ⚠️
+#### 4. **Endpoint `/urls` Bugué** ⚠️
 - **Problème** : Impossible d'ajouter URLs après création land
 - **Solution** : URLs directement dans `start_urls` lors de création
 - **Éviter** : `POST /api/v2/lands/{id}/urls`
 
-#### 4. **Analyse Média : Utiliser UNIQUEMENT l'Endpoint ASYNC** ⚠️
-- **UTILISER** : `/media-analysis-async` (asynchrone, recommandé, logs Celery visibles)
-- **NE PAS UTILISER** : `/media-analysis` (synchrone, déprécié, peut timeout)
-- **Logs Celery** : `docker logs mywebclient-celery_worker-1 --tail=20 -f`
+#### 5. **Bugs Asyncio dans Media Analysis & Readable** ⚠️ **NON RÉSOLU**
+- **Problème** : `RuntimeError: Task got Future attached to a different loop`
+- **Fichiers affectés** :
+  - `/app/app/tasks/media_analysis_task.py:51,237`
+  - `/app/app/tasks/readable_working_task.py`
+- **Erreurs associées** : `InterfaceError: another operation is in progress`
+- **Impact** : L'analyse média async et le pipeline readable sont instables
+- **Workaround** : Utiliser uniquement le crawl sync sans ces fonctionnalités
+- **Status** : À corriger - problème de gestion des event loops asyncio dans Celery
 
-#### 5. **Mots-clés Obligatoires** ⚠️
+#### 6. **Mots-clés Obligatoires** ⚠️
 - **Problème** : Sans mots-clés, `relevance=0` pour toutes expressions
 - **Solution** : Toujours ajouter termes via `/terms` après création land
 - **Impact** : Détermine filtrage pertinence dans analyse média
 
-#### 6. **DEPTH = Niveau de Crawl** 🔥 **CRITIQUE**
+#### 7. **DEPTH = Niveau de Crawl** 🔥 **CRITIQUE**
 - **`depth: 0`** = Analyser médias des **start_urls** seulement
 - **`depth: 1`** = Analyser médias des **liens directs** depuis start_urls
 - **`depth: 2`** = Analyser médias des **liens de liens** (2e niveau)
 - **`depth: 999`** = Analyser **TOUS** les médias sans limite de profondeur
 - **⚠️ BUG ENDPOINT** : L'endpoint `/media-analysis-async` ignore le paramètre `depth` et force toujours `depth: 999`
 
-### 🎯 **Workflow Anti-Erreurs**
+### 🎯 **Workflow Anti-Erreurs (CRAWL SYNC)**
 
 ```bash
 1. ✅ Créer land avec start_urls intégrées (pas d'endpoint /urls)
-2. ✅ Ajouter termes OBLIGATOIREMENT  
+2. ✅ Ajouter termes OBLIGATOIREMENT via /terms
 3. ✅ Renouveler token avant chaque action
-4. ✅ Utiliser /media-analysis-async (pas /media-analysis)
-5. ✅ Suivre logs Celery pour vérifier traitement
-6. ✅ Attendre suffisamment (45s crawl, 20s+ analyse)
+4. ✅ Lancer crawl avec POST /crawl (limit, depth optionnels)
+5. ✅ Attendre suffisamment (60s pour 5 URLs)
+6. ✅ Vérifier logs Celery: docker logs mywebclient-celery_worker-1 --tail=50
+7. ✅ Utiliser le script de test: ./MyWebIntelligenceAPI/tests/test-crawl-simple.sh
 ```
+
+**Résultats attendus (5 URLs Lecornu):**
+- Duration: ~50 secondes
+- URLs Processed: 5
+- Errors: 0
+- Content extrait: ~50,000 caractères
+- Liens découverts: ~1,200 liens
+- Médias extraits: ~200-250 médias
 
 ---
 
@@ -1009,248 +1137,20 @@ python scripts/land_scenario.py \
 # Migration d'une base SQLite existante
 python scripts/migrate_sqlite_to_postgres.py --source /path/to/mwi.db
 ```
-# 📚 Index de la Documentation - Transfert Legacy → API
-
-**Date**: 17 octobre 2025
-**Projet**: MyWebIntelligence - Migration Pipeline Crawl & Readable
-
----
-
-## 🗺️ Vue d'ensemble
-
-Ce dossier `.claude/` contient toute la documentation relative au transfert et à l'alignement du système legacy vers l'API moderne. Suite à l'audit du 17 octobre 2025, **des corrections majeures** ont été apportées pour restaurer la parité avec le système legacy.
-
----
-
-## 📑 Documents par Catégorie
-
-### 🎯 Documents Principaux (À lire en priorité)
-
-#### 1. [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md) ⭐ **START HERE**
-**Résumé exécutif des corrections**
-- Vue d'ensemble des 7 recommandations implémentées
-- Liste des fichiers modifiés
-- Instructions de test et validation
-- Prochaines étapes
-
-**👉 Lisez ce document en premier pour comprendre rapidement ce qui a été fait.**
-
----
-
-#### 2. [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md) 📋 **AUDIT COMPLET**
-**Audit détaillé et statut des corrections**
-- État des lieux initial (écarts identifiés)
-- Cartographie Legacy → API
-- Plan de développement avec statut ✅/⏳
-- Récapitulatif des fichiers modifiés
-
-**👉 Document de référence pour l'audit complet.**
-
----
-
-#### 3. [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md) 🔧 **DÉTAILS TECHNIQUES**
-**Documentation technique complète des corrections**
-- Problèmes identifiés et solutions détaillées
-- Code source modifié avec numéros de lignes
-- Impact métier et fonctionnel
-- Checklist de déploiement
-
-**👉 Pour comprendre les détails techniques de chaque correction.**
-
----
-
-### 🔍 Documents Techniques
-
-#### 4. [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md) 📊 **SCHÉMA PIPELINE**
-**Schéma visuel de la chaîne d'extraction**
-- Diagramme complet de la pipeline
-- Détails de chaque méthode (Trafilatura, Archive.org, BeautifulSoup)
-- Sources d'extraction tracées
-- Comportement attendu selon scénarios
-
-**👉 Pour comprendre visuellement comment fonctionne l'extraction de contenu.**
-
----
-
-#### 5. [Transfert_readable.md](Transfert_readable.md) 📝 **AUDIT READABLE**
-**Audit du pipeline "readable" (mis à jour)**
-- Écarts corrigés ✅
-- Écarts restants à traiter ⏳
-- Actions prioritaires
-- Checklist de validation
-
-**👉 Pour le suivi des écarts spécifiques au pipeline readable.**
-
----
-
-## 🎯 Workflow de Lecture Recommandé
-
-### Pour comprendre rapidement (15 min)
-1. [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md)
-2. [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md) (schéma visuel)
-
-### Pour une compréhension complète (1h)
-1. [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md)
-2. [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md)
-3. [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md)
-4. [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md)
-
-### Pour l'implémentation (développeur)
-1. [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md)
-2. [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md)
-3. Code source dans `MyWebIntelligenceAPI/app/core/`
-4. Tests dans `MyWebIntelligenceAPI/tests/test_legacy_parity.py`
-
-### Pour la validation (QA/Tests)
-1. [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md) (section Tests)
-2. [Transfert_readable.md](Transfert_readable.md) (checklist validation)
-3. `MyWebIntelligenceAPI/tests/test_legacy_parity.py`
-
----
-
-## 📊 Statut Global
-
-### ✅ Corrections Implémentées (100% des recommandations)
-- ✅ Format markdown Trafilatura avec enrichissement
-- ✅ Ordre des fallbacks aligné (Trafilatura → Archive.org → BeautifulSoup + smart)
-- ✅ Enrichissement markdown avec marqueurs médias
-- ✅ Extraction et création de liens depuis markdown
-- ✅ Persistance champs legacy (content, http_status)
-- ✅ Fallback Archive.org avec trafilatura.fetch_url
-- ✅ Smart extraction optimisée dans BeautifulSoup
-
-### ⏳ Validations Requises
-- ⏳ Services parallèles (ReadableSimpleService, ReadableCeleryService)
-- ⏳ Tests de non-régression sur échantillon URLs
-- ⏳ Validation avec downstream consumers
-
----
-
-## 🗂️ Structure des Fichiers
-
-```
-.claude/
-├── INDEX_DOCUMENTATION.md          ← Vous êtes ici
-├── RÉSUMÉ_CORRECTIONS_17OCT2025.md ⭐ Start here
-├── TRANSFERT_API_CRAWL.md          📋 Audit complet
-├── CORRECTIONS_PARITÉ_LEGACY.md    🔧 Détails techniques
-├── CHAÎNE_FALLBACKS.md             📊 Schéma pipeline
-└── Transfert_readable.md           📝 Audit readable (mis à jour)
-```
-
----
-
-## 📁 Code Source Modifié
-
-### Fichiers Principaux
-```
-MyWebIntelligenceAPI/
-├── app/core/
-│   ├── content_extractor.py    (+150 lignes, 4 nouvelles fonctions)
-│   └── crawler_engine.py       (+130 lignes, 2 nouvelles méthodes)
-├── app/schemas/
-│   └── expression.py            (+3 champs)
-└── tests/
-    └── test_legacy_parity.py   (suite complète de tests)
-```
-
-### Scripts Utilitaires
-```
-MyWebIntelligenceAPI/scripts/
-├── verify_legacy_parity.py     (vérification Python)
-└── check_files.sh              (vérification bash) ✅ Testé
-```
-
----
-
-## 🧪 Tests et Validation
-
-### Tests Unitaires
-```bash
-cd MyWebIntelligenceAPI
-pytest tests/test_legacy_parity.py -v
-```
-
-### Vérification Rapide
-```bash
-cd MyWebIntelligenceAPI
-./scripts/check_files.sh
-```
-
-### Test Manuel
-```bash
-# API doit être lancée
-curl -X POST http://localhost:8000/api/lands/{land_id}/crawl
-```
-
----
-
-## 📈 Métriques
-
-### Taux de Complétion
-- **Recommandations implémentées**: 7/7 (100%)
-- **Fichiers modifiés**: 3 fichiers core + 1 schéma + 1 tests
-- **Lignes de code ajoutées**: ~280 lignes
-- **Nouvelles fonctions**: 6 fonctions + 2 méthodes
-- **Tests créés**: 1 suite complète (10+ test cases)
-
-### Couverture Fonctionnelle
-- **Format markdown**: 100% ✅
-- **Fallbacks**: 100% ✅
-- **Enrichissement médias**: 100% ✅
-- **Extraction liens**: 100% ✅
-- **Champs legacy**: 100% ✅
-- **Archive.org**: 100% ✅
-- **Smart extraction**: 100% ✅
-
----
-
-## 🚀 Prochaines Étapes
-
-### Phase 1 - Tests (Priorité Haute)
-1. Exécuter tests unitaires
-2. Tests d'intégration sur URLs réelles
-3. Validation comparative legacy vs API
-
-### Phase 2 - Validation Services (Priorité Haute)
-1. Auditer ReadableSimpleService
-2. Auditer ReadableCeleryService
-3. S'assurer de la cohérence du recalcul de pertinence
-
-### Phase 3 - Déploiement (Priorité Moyenne)
-1. Tests en staging
-2. Migration base de données (si nécessaire)
-3. Déploiement production
-4. Monitoring
-
----
-
-## 📞 Support
-
-### Questions sur les Corrections
-- Consulter [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md)
-- Section "Points d'attention" et "Impacts métier"
-
-### Questions sur la Pipeline
-- Consulter [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md)
-- Schéma visuel et détails des méthodes
-
-### Questions sur l'Audit
-- Consulter [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md)
-- Section "Écarts identifiés" et "Plan de remise à niveau"
-
----
-
-## 🏷️ Tags et Mots-clés
-
-**Concepts**: Legacy, API, Migration, Parité, Crawl, Readable, Trafilatura, Archive.org, BeautifulSoup
-
-**Technos**: Python, FastAPI, SQLAlchemy, Trafilatura, BeautifulSoup, Celery, WebSocket
-
-**Statuts**: ✅ Corrigé, ⏳ En cours, ❌ Non fait
-
----
-
-**Dernière mise à jour**: 17 octobre 2025
-**Version**: 1.0
+## 📚 Documentation de référence
+
+- [INDEX_DOCUMENTATION.md](INDEX_DOCUMENTATION.md) — carte et statuts des documents actifs
+- [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md) — synthèse produit & plan d'actions
+- [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md) — audit complet et cartographie Legacy → API
+- [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md) — corrections techniques (métadonnées, HTML, stockage)
+- [Transfert_readable.md](Transfert_readable.md) — suivi de la parité du pipeline readable
+- [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md) — schéma détaillé des fallbacks d'extraction
+- [METADATA_FIXES.md](METADATA_FIXES.md) — corrections métadonnées (journal complet)
+- [CORRECTIONS_FINALES.md](CORRECTIONS_FINALES.md) — synthèse + plan de tests métadonnées
+- [compare_addterms_analysis.md](compare_addterms_analysis.md) — état des lieux AddTerms et recommandations
+- [Architecture.md](Architecture.md) — structure du dépôt et responsabilités par module
+- [GEMINI.md](GEMINI.md) — guide opérateur/API (vue complémentaire)
+
+**Dernière mise à jour**: 18 octobre 2025  
+**Version**: 1.1  
 **Mainteneur**: Équipe MyWebIntelligence
