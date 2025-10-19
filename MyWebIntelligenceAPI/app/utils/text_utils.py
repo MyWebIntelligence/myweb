@@ -414,5 +414,43 @@ def normalize_text(text: str) -> str:
     
     # Normalisation des espaces
     text = re.sub(r'\s+', ' ', text).strip()
-    
+
+    return text
+
+
+def prepare_text_for_sentiment(content: str, max_length: int = 2000) -> str:
+    """
+    Prepare text for sentiment analysis.
+
+    - Strip HTML tags (if any remain)
+    - Remove excessive whitespace
+    - Truncate to max_length
+    - Preserve sentence structure
+
+    Args:
+        content: Raw or readable content
+        max_length: Maximum characters to keep
+
+    Returns:
+        Cleaned text ready for sentiment analysis
+    """
+    from bs4 import BeautifulSoup
+
+    if not content:
+        return ""
+
+    # Remove HTML tags if present
+    soup = BeautifulSoup(content, 'html.parser')
+    text = soup.get_text(separator=' ', strip=True)
+
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # Truncate intelligently (try to break at sentence)
+    if len(text) > max_length:
+        text = text[:max_length]
+        last_period = text.rfind('.')
+        if last_period > max_length * 0.8:  # If period found in last 20%
+            text = text[:last_period + 1]
+
     return text

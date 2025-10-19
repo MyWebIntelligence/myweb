@@ -21,6 +21,9 @@ from sqlalchemy.orm import Session, selectinload
 from app.core import content_extractor, text_processing
 from app.core.media_processor_sync import MediaProcessorSync
 from app.db import models
+from app.services.sentiment_service import SentimentService
+from app.services.quality_scorer import QualityScorer
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,8 @@ class SyncCrawlerEngine:
     def __init__(self, db: Session):
         self.db = db
         self.http_client = httpx.Client(timeout=15.0, follow_redirects=True)
+        self.sentiment_service = SentimentService()  # Initialize sentiment service
+        self.quality_scorer = QualityScorer()  # Initialize quality scorer
 
     # ------------------------------------------------------------------ #
     # High level API                                                     #
@@ -285,6 +290,103 @@ class SyncCrawlerEngine:
                 )
                 loop.close()
             update_data["relevance"] = relevance
+
+            # Sentiment Analysis (if enabled)
+            if settings.ENABLE_SENTIMENT_ANALYSIS:
+                try:
+                    # Determine if we should use LLM (this would come from crawl parameters)
+                    # For now, always use TextBlob (default) unless explicitly requested
+                    use_llm = False  # TODO: Get from crawl parameters (llm_validation flag)
+
+                    # Note: sentiment_service methods are sync-compatible via asyncio.run
+                    try:
+                        sentiment_data = asyncio.run(
+                            self.sentiment_service.enrich_expression_sentiment(
+                                content=update_data.get("content"),
+                                readable=readable_content,
+                                language=final_lang,
+                                use_llm=use_llm
+                            )
+                        )
+                    except RuntimeError:
+                        # Already in event loop
+                        loop = asyncio.new_event_loop()
+                        sentiment_data = loop.run_until_complete(
+                            self.sentiment_service.enrich_expression_sentiment(
+                                content=update_data.get("content"),
+                                readable=readable_content,
+                                language=final_lang,
+                                use_llm=use_llm
+                            )
+                        )
+                        loop.close()
+
+                    # Add sentiment data to update
+                    update_data["sentiment_score"] = sentiment_data["sentiment_score"]
+                    update_data["sentiment_label"] = sentiment_data["sentiment_label"]
+                    update_data["sentiment_confidence"] = sentiment_data["sentiment_confidence"]
+                    update_data["sentiment_status"] = sentiment_data["sentiment_status"]
+                    update_data["sentiment_model"] = sentiment_data["sentiment_model"]
+                    update_data["sentiment_computed_at"] = sentiment_data["sentiment_computed_at"]
+
+                    logger.debug(
+                        f"[SYNC] Sentiment enriched for {expr_url}: "
+                        f"{sentiment_data['sentiment_label']} ({sentiment_data['sentiment_score']}) "
+                        f"via {sentiment_data['sentiment_model']}"
+                    )
+                except Exception as e:
+                    logger.error(f"[SYNC] Sentiment enrichment failed for {expr_url}: {e}")
+                    # Continue without sentiment (non-blocking)
+
+            # Quality Score (if enabled)
+            if settings.ENABLE_QUALITY_SCORING:
+                try:
+                    # Get land from DB for quality computation
+                    land = self.db.query(models.Land).filter(models.Land.id == expr.land_id).first()
+
+                    if land:
+                        # Build temporary expression object for quality computation
+                        class TempExprQuality:
+                            def __init__(self, data, existing_expr):
+                                # Copy all fields from update_data
+                                for key, value in data.items():
+                                    setattr(self, key, value)
+                                # Add fields needed for quality computation
+                                self.http_status = data.get("http_status")
+                                self.content_type = data.get("content_type")
+                                self.title = data.get("title")
+                                self.description = data.get("description")
+                                self.keywords = data.get("keywords")
+                                self.canonical_url = data.get("canonical_url")
+                                self.word_count = data.get("word_count")
+                                self.content_length = data.get("content_length")
+                                self.reading_time = data.get("reading_time")
+                                self.language = data.get("lang")  # Note: update_data uses 'lang', model uses 'language'
+                                self.relevance = data.get("relevance")
+                                self.validllm = getattr(existing_expr, 'validllm', None)  # From existing expr
+                                self.readable = data.get("readable")
+                                self.readable_at = getattr(existing_expr, 'readable_at', None)
+                                self.crawled_at = data.get("crawled_at")
+
+                        temp_expr_quality = TempExprQuality(update_data, expr)
+
+                        quality_result = self.quality_scorer.compute_quality_score(
+                            expression=temp_expr_quality,
+                            land=land
+                        )
+
+                        update_data["quality_score"] = quality_result["score"]
+
+                        logger.debug(
+                            f"[SYNC] Quality computed for {expr_url}: "
+                            f"{quality_result['score']:.2f} ({quality_result['category']})"
+                        )
+                    else:
+                        logger.warning(f"[SYNC] Could not compute quality: land {expr.land_id} not found")
+
+                except Exception as e:
+                    logger.error(f"[SYNC] Quality scoring failed for {expr_url}: {e}")
+                    # Continue without quality (non-blocking)
 
             # approved_at is set whenever readable content is saved
             update_data["approved_at"] = datetime.utcnow()

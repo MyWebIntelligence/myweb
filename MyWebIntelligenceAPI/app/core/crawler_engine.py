@@ -10,6 +10,9 @@ from app.schemas.expression import ExpressionUpdate
 from app.crud import crud_expression, crud_land
 from app.db import models
 from app.core import content_extractor, text_processing, media_processor
+from app.services.sentiment_service import SentimentService
+from app.services.quality_scorer import QualityScorer
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,8 @@ class CrawlerEngine:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.http_client = httpx.AsyncClient(timeout=15.0, follow_redirects=True)
+        self.sentiment_service = SentimentService()  # Initialize sentiment service
+        self.quality_scorer = QualityScorer()  # Initialize quality scorer
 
     async def prepare_crawl(
         self,
@@ -229,6 +234,87 @@ class CrawlerEngine:
                 metadata_lang or 'fr'
             )
             update_data["relevance"] = relevance
+
+            # 3.5. Sentiment Analysis (if enabled)
+            if settings.ENABLE_SENTIMENT_ANALYSIS:
+                try:
+                    # Determine if we should use LLM (this would come from crawl parameters)
+                    # For now, always use TextBlob (default) unless explicitly requested
+                    use_llm = False  # TODO: Get from crawl parameters (llm_validation flag)
+
+                    sentiment_data = await self.sentiment_service.enrich_expression_sentiment(
+                        content=update_data.get("content"),
+                        readable=readable_content,
+                        language=final_lang,
+                        use_llm=use_llm
+                    )
+
+                    # Add sentiment data to update
+                    update_data["sentiment_score"] = sentiment_data["sentiment_score"]
+                    update_data["sentiment_label"] = sentiment_data["sentiment_label"]
+                    update_data["sentiment_confidence"] = sentiment_data["sentiment_confidence"]
+                    update_data["sentiment_status"] = sentiment_data["sentiment_status"]
+                    update_data["sentiment_model"] = sentiment_data["sentiment_model"]
+                    update_data["sentiment_computed_at"] = sentiment_data["sentiment_computed_at"]
+
+                    logger.debug(
+                        f"Sentiment enriched for {expr_url}: "
+                        f"{sentiment_data['sentiment_label']} ({sentiment_data['sentiment_score']}) "
+                        f"via {sentiment_data['sentiment_model']}"
+                    )
+                except Exception as e:
+                    logger.error(f"Sentiment enrichment failed for {expr_url}: {e}")
+                    # Continue without sentiment (non-blocking)
+
+            # 3.6. Quality Score (if enabled)
+            if settings.ENABLE_QUALITY_SCORING:
+                try:
+                    # Get land for quality computation
+                    land = await crud_land.land.get(self.db, id=expr_land_id)
+
+                    if land:
+                        # Build temporary expression object for quality computation
+                        class TempExpr:
+                            def __init__(self, data):
+                                # Copy all fields from update_data
+                                for key, value in data.items():
+                                    setattr(self, key, value)
+                                # Add fields needed for quality computation
+                                self.http_status = data.get("http_status")
+                                self.content_type = data.get("content_type")
+                                self.title = data.get("title")
+                                self.description = data.get("description")
+                                self.keywords = data.get("keywords")
+                                self.canonical_url = data.get("canonical_url")
+                                self.word_count = data.get("word_count")
+                                self.content_length = data.get("content_length")
+                                self.reading_time = data.get("reading_time")
+                                self.language = data.get("lang")  # Note: update_data uses 'lang', model uses 'language'
+                                self.relevance = data.get("relevance")
+                                self.validllm = getattr(expr, 'validllm', None)  # From existing expr
+                                self.readable = data.get("readable")
+                                self.readable_at = getattr(expr, 'readable_at', None)
+                                self.crawled_at = data.get("crawled_at")
+
+                        temp_expr = TempExpr(update_data)
+
+                        quality_result = self.quality_scorer.compute_quality_score(
+                            expression=temp_expr,
+                            land=land
+                        )
+
+                        update_data["quality_score"] = quality_result["score"]
+
+                        logger.debug(
+                            f"Quality computed for {expr_url}: "
+                            f"{quality_result['score']:.2f} ({quality_result['category']})"
+                        )
+                    else:
+                        logger.warning(f"Could not compute quality: land {expr_land_id} not found")
+
+                except Exception as e:
+                    logger.error(f"Quality scoring failed for {expr_url}: {e}")
+                    # Continue without quality (non-blocking)
 
             # 4. approved_at is set whenever readable content is saved
             update_data["approved_at"] = datetime.utcnow()

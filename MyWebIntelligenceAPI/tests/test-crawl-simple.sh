@@ -77,7 +77,7 @@ get_fresh_token
 CRAWL_RESULT=$(curl -s -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/crawl" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"limit": 2}' --max-time 120)
+  -d '{"limit": 5}' --max-time 120)
 
 JOB_ID=$(echo "$CRAWL_RESULT" | jq -r '.job_id')
 if [ "$JOB_ID" = "null" ] || [ -z "$JOB_ID" ]; then

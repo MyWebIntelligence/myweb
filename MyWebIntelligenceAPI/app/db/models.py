@@ -230,7 +230,12 @@ class Expression(Base):
     etag = Column(String(255), nullable=True)
     
     # Scores d'analyse
-    sentiment_score = Column(Float, nullable=True)  # Analyse de sentiment
+    sentiment_score = Column(Float, nullable=True)  # Score de sentiment (-1.0 à +1.0)
+    sentiment_label = Column(String(20), nullable=True)  # "positive", "neutral", "negative"
+    sentiment_confidence = Column(Float, nullable=True)  # Confiance du modèle (0.0 à 1.0)
+    sentiment_status = Column(String(30), nullable=True)  # "computed", "failed", "unsupported_lang", etc.
+    sentiment_model = Column(String(100), nullable=True)  # Modèle utilisé (textblob, llm/claude-3.5-sonnet)
+    sentiment_computed_at = Column(DateTime(timezone=True), nullable=True)  # Timestamp du calcul
     quality_score = Column(Float, nullable=True)   # Score de qualité du contenu
     
     # Configuration

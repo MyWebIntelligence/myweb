@@ -239,8 +239,10 @@ content: str               # Contenu HTML
 readable: str              # Contenu lisible (markdown)
 depth: int                 # Profondeur de crawl
 relevance: float           # Score de pertinence
+quality_score: float       # Score de qualité (0.0-1.0) ✨ NOUVEAU
 language: str              # Langue détectée
 word_count: int            # Nombre de mots
+http_status: int           # Code HTTP (200, 404, etc.)
 ```
 
 #### Media (Fichiers média)
@@ -382,6 +384,187 @@ curl -X POST "http://localhost:8000/api/v2/lands/36/readable" \
 - `valid_llm` : "oui" (pertinent) ou "non" (non pertinent)
 - `valid_model` : Modèle utilisé (ex: "anthropic/claude-3.5-sonnet")
 - `relevance` : Mis à 0 si expression jugée non pertinente
+
+---
+
+## 🏆 Quality Score System (Nouveau - Octobre 2025) ✅
+
+### ⚠️ DOUBLE CRAWLER : Implémentation Complète
+
+**✅ IMPLÉMENTÉ DANS LES DEUX CRAWLERS :**
+- ✅ `crawler_engine.py` (AsyncCrawlerEngine) - lignes 269-317
+- ✅ `crawler_engine_sync.py` (SyncCrawlerEngine) - lignes 341-389
+- ✅ **Parité parfaite** : Même logique dans les deux crawlers
+
+### 📊 Vue d'Ensemble
+
+Le **Quality Score** est un indicateur de qualité automatique pour chaque expression (page crawlée), calculé à partir de métadonnées existantes. Score entre **0.0** (très faible) et **1.0** (excellent).
+
+```
+Quality Score = Σ (Bloc_i × Poids_i)
+
+5 Blocs Heuristiques :
+1️⃣  Access (30%)      → HTTP status, content-type
+2️⃣  Structure (15%)   → Title, description, keywords, canonical
+3️⃣  Richness (25%)    → Word count, ratio texte/HTML, reading time
+4️⃣  Coherence (20%)   → Langue, relevance, fraîcheur
+5️⃣  Integrity (10%)   → LLM validation, pipeline complet
+```
+
+**Catégories de Qualité :**
+- `0.8-1.0` : **Excellent** ⭐ (Contenu riche, bien structuré)
+- `0.6-0.8` : **Bon** ✅ (Contenu acceptable)
+- `0.4-0.6` : **Moyen** ⚠️ (Contenu limité)
+- `0.2-0.4` : **Faible** ❌ (Très pauvre)
+- `0.0-0.2` : **Très faible** ❌❌ (Erreur d'accès)
+
+### 🎯 Caractéristiques
+
+- ✅ **100% déterministe** : Pas de ML/LLM, reproductible
+- ✅ **Gratuit** : Pas d'appels API externes
+- ✅ **Rapide** : <10ms par expression
+- ✅ **Transparent** : Heuristiques documentées
+- ✅ **Configurable** : Poids ajustables via settings
+
+### ⚙️ Configuration
+
+Dans `.env` ou `app/config.py` :
+```python
+# Master switch (activé par défaut)
+ENABLE_QUALITY_SCORING=true
+
+# Poids des 5 blocs (doivent sommer à 1.0)
+QUALITY_WEIGHT_ACCESS=0.30      # Accès
+QUALITY_WEIGHT_STRUCTURE=0.15   # Structure HTML/SEO
+QUALITY_WEIGHT_RICHNESS=0.25    # Richesse contenu
+QUALITY_WEIGHT_COHERENCE=0.20   # Cohérence land/langue
+QUALITY_WEIGHT_INTEGRITY=0.10   # Intégrité pipeline
+```
+
+### 🚀 Usage Automatique
+
+Le `quality_score` est **calculé automatiquement** lors du crawl :
+
+```bash
+# Via API
+curl -X POST "http://localhost:8000/api/v2/lands/15/crawl" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"limit": 100}'
+
+# Via Celery
+from app.core.celery_app import crawl_land_task
+crawl_land_task.delay(land_id=15, limit=100)
+```
+
+Le champ `quality_score` est automatiquement rempli dans la DB pour chaque expression crawlée.
+
+### 🔄 Reprocessing Historique
+
+Pour recalculer les quality_scores sur expressions existantes :
+
+```bash
+# Dry-run (simulation)
+docker exec mywebintelligenceapi python -m app.scripts.reprocess_quality_scores --dry-run
+
+# Reprocess toutes les expressions sans quality_score
+docker exec mywebintelligenceapi python -m app.scripts.reprocess_quality_scores
+
+# Reprocess un land spécifique
+docker exec mywebintelligenceapi python -m app.scripts.reprocess_quality_scores --land-id 15
+
+# Limiter le nombre d'expressions
+docker exec mywebintelligenceapi python -m app.scripts.reprocess_quality_scores --limit 1000
+
+# Forcer le recalcul même si quality_score existe
+docker exec mywebintelligenceapi python -m app.scripts.reprocess_quality_scores --force
+```
+
+**Exemple de sortie :**
+```
+============================================================
+REPROCESSING SUMMARY
+============================================================
+Total candidates:     70
+Processed:            70
+Updated:              70
+Errors:               0
+Duration:             9.5s
+
+Quality Distribution:
+  Excellent      :   25 ( 35.7%)
+  Bon            :   45 ( 64.3%)
+  Moyen          :    0 (  0.0%)
+  Faible         :    0 (  0.0%)
+  Très faible    :    0 (  0.0%)
+============================================================
+```
+
+### 🔍 Requêtes SQL Utiles
+
+**Statistiques globales :**
+```sql
+SELECT
+  COUNT(*) as total,
+  COUNT(quality_score) as with_quality,
+  ROUND(AVG(quality_score)::numeric, 3) as avg_score
+FROM expressions;
+```
+
+**Distribution par catégorie :**
+```sql
+SELECT
+  CASE
+    WHEN quality_score >= 0.8 THEN 'Excellent'
+    WHEN quality_score >= 0.6 THEN 'Bon'
+    WHEN quality_score >= 0.4 THEN 'Moyen'
+    WHEN quality_score >= 0.2 THEN 'Faible'
+    ELSE 'Très faible'
+  END as category,
+  COUNT(*) as count,
+  ROUND(AVG(quality_score)::numeric, 3) as avg_score
+FROM expressions
+WHERE quality_score IS NOT NULL
+GROUP BY category
+ORDER BY avg_score DESC;
+```
+
+**Top 10 meilleures expressions :**
+```sql
+SELECT id, url, quality_score, word_count, relevance
+FROM expressions
+WHERE quality_score IS NOT NULL
+ORDER BY quality_score DESC
+LIMIT 10;
+```
+
+### 📚 Fichiers du Système
+
+| Fichier | Description |
+|---------|-------------|
+| `app/services/quality_scorer.py` | Service de calcul (5 blocs) |
+| `app/core/crawler_engine.py` | Intégration ASYNC (lignes 269-317) |
+| `app/core/crawler_engine_sync.py` | Intégration SYNC (lignes 341-389) |
+| `app/scripts/reprocess_quality_scores.py` | Script de reprocessing |
+| `tests/unit/test_quality_scorer.py` | 33 tests unitaires ✅ |
+| `tests/data/quality_truth_table.json` | 20 cas de validation |
+| `.claude/docs/QUALITY_SCORE_GUIDE.md` | Documentation complète (500+ lignes) |
+
+### 🧪 Tests
+
+```bash
+# Tests unitaires (33 tests)
+docker exec mywebintelligenceapi pytest tests/unit/test_quality_scorer.py -v
+
+# Validation truth table
+docker exec mywebintelligenceapi pytest tests/unit/test_quality_scorer.py::TestTruthTable -v
+```
+
+### 🎓 Documentation Complète
+
+Pour les détails complets (heuristiques, tuning, troubleshooting) :
+**Voir** : `.claude/docs/QUALITY_SCORE_GUIDE.md`
+
+---
 
 ### 5. Pipeline d'Export
 ```
@@ -1140,6 +1323,7 @@ python scripts/migrate_sqlite_to_postgres.py --source /path/to/mwi.db
 ## 📚 Documentation de référence
 
 - [INDEX_DOCUMENTATION.md](INDEX_DOCUMENTATION.md) — carte et statuts des documents actifs
+- [QUALITY_SCORE_GUIDE.md](.claude/docs/QUALITY_SCORE_GUIDE.md) — guide complet Quality Score System ✨ NOUVEAU
 - [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md) — synthèse produit & plan d'actions
 - [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md) — audit complet et cartographie Legacy → API
 - [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md) — corrections techniques (métadonnées, HTML, stockage)
@@ -1151,6 +1335,6 @@ python scripts/migrate_sqlite_to_postgres.py --source /path/to/mwi.db
 - [Architecture.md](Architecture.md) — structure du dépôt et responsabilités par module
 - [GEMINI.md](GEMINI.md) — guide opérateur/API (vue complémentaire)
 
-**Dernière mise à jour**: 18 octobre 2025  
-**Version**: 1.1  
+**Dernière mise à jour**: 18 octobre 2025
+**Version**: 1.2 (ajout Quality Score System)
 **Mainteneur**: Équipe MyWebIntelligence

@@ -76,6 +76,8 @@ internetarchive==3.6.0
 
 # Traitement NLP
 nltk==3.8.1
+textblob==0.17.1  # Analyse de sentiment (léger, rapide)
+textblob-fr==0.2.0  # Support français pour TextBlob
 
 # Playwright pour scraping dynamique (optionnel)
 playwright==1.47.0  # À installer séparément avec: playwright install

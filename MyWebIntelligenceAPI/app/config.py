@@ -98,12 +98,25 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: Optional[str] = None
     FROM_EMAIL: Optional[str] = None
     
-    # Configuration OpenRouter (pour validation LLM)
+    # Configuration OpenRouter (pour validation LLM et sentiment)
     OPENROUTER_ENABLED: bool = False
     OPENROUTER_API_KEY: Optional[str] = None
     OPENROUTER_MODEL: str = "anthropic/claude-3.5-sonnet"
     OPENROUTER_TIMEOUT: int = 30
     OPENROUTER_MAX_RETRIES: int = 3
+
+    # Configuration Sentiment Analysis
+    ENABLE_SENTIMENT_ANALYSIS: bool = True  # Master switch pour activer/désactiver le sentiment
+    SENTIMENT_MIN_CONFIDENCE: float = 0.5  # Seuil de confiance minimal (0.0 à 1.0)
+    SENTIMENT_SUPPORTED_LANGUAGES: str = "fr,en"  # Langues supportées (séparées par des virgules)
+
+    # Configuration Quality Scoring
+    ENABLE_QUALITY_SCORING: bool = True  # Master switch pour activer/désactiver le quality score
+    QUALITY_WEIGHT_ACCESS: float = 0.30  # Poids bloc Access (HTTP status, content-type)
+    QUALITY_WEIGHT_STRUCTURE: float = 0.15  # Poids bloc Structure (title, description, etc.)
+    QUALITY_WEIGHT_RICHNESS: float = 0.25  # Poids bloc Richness (word count, ratio, etc.)
+    QUALITY_WEIGHT_COHERENCE: float = 0.20  # Poids bloc Coherence (language, relevance, etc.)
+    QUALITY_WEIGHT_INTEGRITY: float = 0.10  # Poids bloc Integrity (LLM, pipeline, etc.)
     
     def create_directories(self):
         """Créer les répertoires nécessaires s'ils n'existent pas"""

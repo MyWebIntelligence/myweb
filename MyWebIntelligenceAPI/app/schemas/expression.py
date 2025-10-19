@@ -41,6 +41,14 @@ class ExpressionUpdate(BaseModel):
     valid_model: Optional[str] = None
     seo_rank: Optional[str] = None
 
+    # Sentiment Analysis fields
+    sentiment_score: Optional[float] = None
+    sentiment_label: Optional[str] = None
+    sentiment_confidence: Optional[float] = None
+    sentiment_status: Optional[str] = None
+    sentiment_model: Optional[str] = None
+    sentiment_computed_at: Optional[datetime] = None
+
 # Schéma pour l'affichage d'une Expression
 class Expression(TimeStampedSchema):
     id: int
@@ -61,3 +69,11 @@ class Expression(TimeStampedSchema):
     valid_llm: Optional[str] = None
     valid_model: Optional[str] = None
     seo_rank: Optional[str] = None
+
+    # Sentiment Analysis fields
+    sentiment_score: Optional[float] = None
+    sentiment_label: Optional[str] = None
+    sentiment_confidence: Optional[float] = None
+    sentiment_status: Optional[str] = None
+    sentiment_model: Optional[str] = None
+    sentiment_computed_at: Optional[datetime] = None
