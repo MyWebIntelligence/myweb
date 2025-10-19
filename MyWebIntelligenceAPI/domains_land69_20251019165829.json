@@ -1,0 +1,122 @@
+[
+  {
+    "id": 2744,
+    "land_id": 69,
+    "name": "www.liberation.fr",
+    "title": "Libération - Actualité en direct, infos en France et dans le monde",
+    "description": "Retrouvez toute l'info en continu avec Libération pour ne rien manquer de l'actualité : Politique, International, Société, Sport, Environnement et Sciences...",
+    "keywords": null,
+    "language": "fr",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:58:01.419235+00:00",
+    "last_crawled": "2025-10-19T16:58:01.419235+00:00"
+  },
+  {
+    "id": 2751,
+    "land_id": 69,
+    "name": "www.leparisien.fr",
+    "title": "Actualités en direct et info en continu - Le Parisien",
+    "description": "Retrouvez toute l'actualité en direct, en photos et en vidéo sur l'actualité politique, sociale, économique et sportive avec Le Parisien.",
+    "keywords": null,
+    "language": "fr-FR",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:58:00.814259+00:00",
+    "last_crawled": "2025-10-19T16:58:00.814259+00:00"
+  },
+  {
+    "id": 2742,
+    "land_id": 69,
+    "name": "www.lemonde.fr",
+    "title": "Le Monde - Toute l’actualité en continu",
+    "description": "International, Economie, Environnement … La référence, partout, tout le temps.",
+    "keywords": null,
+    "language": "fr",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:57:59.927367+00:00",
+    "last_crawled": "2025-10-19T16:57:59.927367+00:00"
+  },
+  {
+    "id": 2747,
+    "land_id": 69,
+    "name": "www.lefigaro.fr",
+    "title": "Le Figaro - Actualité en direct et informations en continu",
+    "description": "A la Une : Retrouvez toute l'actualité en France, à l'international, l'actualité économique et politique avec Le Figaro",
+    "keywords": "A la Une, actualité, informations, titres, actualité internationale, actualité française, sport, économie",
+    "language": "fr",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:57:59.582708+00:00",
+    "last_crawled": "2025-10-19T16:57:59.582708+00:00"
+  },
+  {
+    "id": 2748,
+    "land_id": 69,
+    "name": "www.latribune.fr",
+    "title": "La Tribune - Actualité Économique et Financière",
+    "description": "Suivez l'actualité économique, financière et boursière avec La Tribune.",
+    "keywords": "actualité économique, journal financier, bourse, finance, entreprises, économie française, analyses économiques, décryptages financiers",
+    "language": "fr",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:57:58.924640+00:00",
+    "last_crawled": "2025-10-19T16:57:58.924640+00:00"
+  },
+  {
+    "id": 2746,
+    "land_id": 69,
+    "name": "www.franceinfo.fr",
+    "title": "Franceinfo - Actualités en temps réel et info en direct",
+    "description": "Pour savoir ce qui se passe maintenant - Toutes les infos livrées minute par minute par la rédaction de Franceinfo. Photos, vidéos, tweets et vos interventions",
+    "keywords": null,
+    "language": "fr",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:57:58.486486+00:00",
+    "last_crawled": "2025-10-19T16:57:58.486486+00:00"
+  },
+  {
+    "id": 2745,
+    "land_id": 69,
+    "name": "www.bfmtv.com",
+    "title": "Actualités en continu et info en direct et replay - BFMTV",
+    "description": "BFMTV - 1ère sur l'info. Retrouvez toute l'actualité en direct, en photo et en vidéo sur l'info politique, sociale, économique, sportive et internationale.",
+    "keywords": null,
+    "language": "fr",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:57:57.476428+00:00",
+    "last_crawled": "2025-10-19T16:57:57.476428+00:00"
+  },
+  {
+    "id": 2743,
+    "land_id": 69,
+    "name": "www.20minutes.fr",
+    "title": "20 Minutes - Toute l’actualité en direct et les dernières infos en continu",
+    "description": "Suivez l’actualité du jour sur 20 Minutes, média gratuit et indépendant. Politique, Sport, Culture, High Tech, Ecologie… Toute l’info en continu",
+    "keywords": null,
+    "language": "fr",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:57:56.115973+00:00",
+    "last_crawled": "2025-10-19T16:57:56.115973+00:00"
+  },
+  {
+    "id": 2750,
+    "land_id": 69,
+    "name": "rmc.bfmtv.com",
+    "title": "Fil Infos",
+    "description": "Toute l'info et le sport en direct sur RMC ! Retrouvez la radio RMC en live, les replays et podcasts de vos émissions préférées.",
+    "keywords": null,
+    "language": "fr",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:47:08.511492+00:00",
+    "last_crawled": "2025-10-19T16:47:08.511492+00:00"
+  },
+  {
+    "id": 2749,
+    "land_id": 69,
+    "name": "francoisruffin.fr",
+    "title": "Accueil",
+    "description": "Votre député votre voix Député Nouveau Front populairede la 1ère circonscription de la Somme Re...",
+    "keywords": null,
+    "language": "fr-FR",
+    "http_status": "200",
+    "fetched_at": "2025-10-19T16:47:06.190366+00:00",
+    "last_crawled": "2025-10-19T16:47:06.190366+00:00"
+  }
+]

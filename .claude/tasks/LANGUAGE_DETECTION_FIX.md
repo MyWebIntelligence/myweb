@@ -62,17 +62,9 @@ update_data.update({
 })
 ```
 
-### 2. Crawler Asynchrone ([crawler_engine.py:206](../MyWebIntelligenceAPI/app/core/crawler_engine.py#L206))
+### 2. Ancien moteur parallèle
 
-**AVANT** :
-```python
-update_data["language"] = final_lang  # ❌
-```
-
-**APRÈS** :
-```python
-update_data["lang"] = final_lang  # ✅
-```
+L'ancien fichier `crawler_engine.py` a été retiré en V2. Aucune action supplémentaire n'est requise.
 
 ### 3. Améliorations Supplémentaires de Détection
 

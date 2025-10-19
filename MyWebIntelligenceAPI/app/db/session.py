@@ -3,6 +3,7 @@ Sessions synchrones pour les tâches Celery et les dépendances sync
 """
 
 from typing import Generator
+from contextlib import contextmanager
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, Session
@@ -37,6 +38,16 @@ def get_session() -> Session:
 
 def get_sync_db() -> Generator[Session, None, None]:
     """Dépendance FastAPI pour obtenir une session synchrone."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def get_sync_db_context() -> Generator[Session, None, None]:
+    """Context manager pour utiliser une session sync dans les tâches Celery."""
     db = SessionLocal()
     try:
         yield db

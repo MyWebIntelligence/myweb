@@ -208,7 +208,9 @@ class SyncCrawlerEngine:
 
         # Extract values from result dict
         readable_content = extraction_result.get('readable')
-        soup = extraction_result.get('soup')  # Needed for links/media extraction
+        soup = extraction_result.get('soup')  # BeautifulSoup du HTML complet (pour metadata)
+        filtered_soup = extraction_result.get('filtered_soup')  # Soup filtré du contenu principal
+        extraction_source = extraction_result.get('extraction_source', 'unknown')
         metadata = {
             'title': extraction_result.get('title', expr_url),
             'description': extraction_result.get('description'),
@@ -391,8 +393,11 @@ class SyncCrawlerEngine:
             # approved_at is set whenever readable content is saved
             update_data["approved_at"] = datetime.utcnow()
 
+            # Extract links and media using appropriate strategy
             self._handle_links_and_media(
-                soup=soup,
+                readable_content=readable_content,
+                extraction_source=extraction_source,
+                filtered_soup=filtered_soup,
                 expr=expr,
                 expr_url=expr_url,
                 analyze_media=analyze_media,
@@ -512,28 +517,186 @@ class SyncCrawlerEngine:
 
     def _handle_links_and_media(
         self,
-        soup,
+        readable_content: Optional[str],
+        extraction_source: str,
+        filtered_soup: Optional[Any],
         expr: models.Expression,
         expr_url: str,
         analyze_media: bool,
     ) -> None:
+        """
+        Extrait les liens et médias selon la source d'extraction.
+
+        Stratégie:
+        - trafilatura_direct / archive_org: Extraction depuis markdown readable
+        - beautifulsoup_smart / beautifulsoup_basic: Extraction depuis soup filtré/nettoyé
+        - all_failed: Pas d'extraction
+
+        Args:
+            readable_content: Contenu readable (markdown ou texte)
+            extraction_source: Source d'extraction
+            filtered_soup: Soup filtré du contenu principal (None si markdown)
+            expr: Expression courante
+            expr_url: URL de l'expression
+            analyze_media: Analyser les images (dimensions, couleurs, etc.)
+        """
         import os
 
         if os.getenv("PYTEST_CURRENT_TEST"):
             logger.debug("Test environment detected, skipping link/media extraction")
             return
 
-        try:
-            self._extract_and_save_links(soup, expr, expr_url)
-        except Exception as exc:  # noqa: BLE001
-            self.db.rollback()
-            logger.warning("Error extracting links for %s: %s", expr_url, exc)
+        logger.info(f"Extracting links/media for {expr_url} using source: {extraction_source}")
 
-        try:
-            self._extract_and_save_media(soup, expr, expr_url, analyze_media)
-        except Exception as exc:  # noqa: BLE001
-            self.db.rollback()
-            logger.warning("Error extracting media for %s: %s", expr_url, exc)
+        # Stratégie selon la source d'extraction
+        if extraction_source in ('trafilatura_direct', 'archive_org'):
+            # ✅ Extraction depuis le markdown readable
+            if not readable_content:
+                logger.warning(f"No readable content for {expr_url}, skipping link/media extraction")
+                return
+
+            try:
+                self._extract_links_from_markdown(readable_content, expr, expr_url)
+            except Exception as exc:  # noqa: BLE001
+                self.db.rollback()
+                logger.warning("Error extracting links from markdown for %s: %s", expr_url, exc)
+
+            try:
+                self._extract_media_from_markdown(readable_content, expr, expr_url, analyze_media)
+            except Exception as exc:  # noqa: BLE001
+                self.db.rollback()
+                logger.warning("Error extracting media from markdown for %s: %s", expr_url, exc)
+
+        elif extraction_source in ('beautifulsoup_smart', 'beautifulsoup_basic'):
+            # ✅ Extraction depuis le soup filtré/nettoyé (PAS le soup complet)
+            if not filtered_soup:
+                logger.warning(f"No filtered soup for {expr_url}, skipping link/media extraction")
+                return
+
+            try:
+                self._extract_and_save_links(filtered_soup, expr, expr_url)
+            except Exception as exc:  # noqa: BLE001
+                self.db.rollback()
+                logger.warning("Error extracting links from soup for %s: %s", expr_url, exc)
+
+            try:
+                self._extract_and_save_media(filtered_soup, expr, expr_url, analyze_media)
+            except Exception as exc:  # noqa: BLE001
+                self.db.rollback()
+                logger.warning("Error extracting media from soup for %s: %s", expr_url, exc)
+
+        elif extraction_source == 'all_failed':
+            # ❌ Aucune extraction réussie
+            logger.warning(f"Extraction failed for {expr_url}, skipping link/media extraction")
+
+        else:
+            logger.error(f"Unknown extraction_source: {extraction_source} for {expr_url}")
+
+    def _extract_links_from_markdown(self, markdown_content: str, expr: models.Expression, expr_url: str) -> List[Dict[str, str]]:
+        """
+        Extrait et sauvegarde les liens depuis le contenu markdown.
+        Format: [texte](url) - liens markdown uniquement (pas les images ![](url))
+        """
+        from app.db.models import ExpressionLink
+
+        links_found: List[Dict[str, str]] = []
+
+        if not markdown_content:
+            return links_found
+
+        # Regex pour liens markdown: [texte](url) mais pas ![texte](url)
+        # Pattern négatif lookbehind pour éviter les images
+        import re
+        link_pattern = r'(?<!!)\[([^\]]*)\]\(([^)]+)\)'
+
+        for match in re.finditer(link_pattern, markdown_content):
+            anchor_text = match.group(1).strip() or "No text"
+            href = match.group(2).strip()
+
+            if not href or href.startswith("#") or href.startswith(("javascript:", "mailto:", "tel:")):
+                continue
+
+            try:
+                full_url = urljoin(expr_url, href)
+                parsed = urlparse(full_url)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    continue
+
+                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                if parsed.query:
+                    tracking_params = {
+                        "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+                        "fbclid", "gclid", "ref", "source", "campaign",
+                    }
+                    kept_params = []
+                    for part in parsed.query.split("&"):
+                        if "=" not in part:
+                            continue
+                        key = part.split("=", 1)[0].lower()
+                        if key not in tracking_params:
+                            kept_params.append(part)
+                    if kept_params:
+                        clean_url = f"{clean_url}?{'&'.join(kept_params)}"
+
+                domain = self._get_or_create_domain(parsed.netloc.lower(), expr.land_id)
+
+                target_expr = (
+                    self.db.query(models.Expression)
+                    .filter(
+                        models.Expression.land_id == expr.land_id,
+                        models.Expression.url_hash == models.Expression.compute_url_hash(clean_url),
+                        models.Expression.url == clean_url,
+                    )
+                    .first()
+                )
+
+                if not target_expr:
+                    depth = (expr.depth or 0) + 1
+                    target_expr = self._get_or_create_expression(expr.land_id, clean_url, depth)
+
+                    links_found.append(
+                        {
+                            "url": clean_url,
+                            "text": anchor_text[:200],
+                            "domain": domain.name,
+                            "depth": target_expr.depth or depth,
+                        }
+                    )
+
+                if target_expr.id == expr.id:
+                    continue
+
+                link_type = "internal" if parsed.netloc == urlparse(expr_url).netloc else "external"
+
+                relationship_exists = (
+                    self.db.query(models.ExpressionLink)
+                    .filter(
+                        models.ExpressionLink.source_id == expr.id,
+                        models.ExpressionLink.target_id == target_expr.id,
+                    )
+                    .first()
+                    is not None
+                )
+
+                if not relationship_exists:
+                    link_obj = ExpressionLink(
+                        source_id=expr.id,
+                        target_id=target_expr.id,
+                        anchor_text=anchor_text[:200],
+                        link_type=link_type,
+                        rel_attribute=None,  # Markdown n'a pas de rel attribute
+                    )
+                    self.db.add(link_obj)
+                    self.db.commit()
+
+            except Exception as exc:  # noqa: BLE001
+                self.db.rollback()
+                logger.warning("Error processing markdown link %s: %s", href, exc)
+
+        if links_found:
+            logger.info("Discovered %s new links from markdown content of %s", len(links_found), expr_url)
+
+        return links_found
 
     def _extract_and_save_links(self, soup, expr: models.Expression, expr_url: str) -> List[Dict[str, str]]:
         from app.db.models import ExpressionLink
@@ -639,6 +802,112 @@ class SyncCrawlerEngine:
             logger.info("Discovered %s new links from %s", len(links_found), expr_url)
 
         return links_found
+
+    def _extract_media_from_markdown(
+        self,
+        markdown_content: str,
+        expr: models.Expression,
+        expr_url: str,
+        analyze_media: bool,
+    ) -> None:
+        """
+        Extrait et sauvegarde les médias depuis le contenu markdown.
+        Formats supportés:
+        - Images: ![alt](url)
+        - Vidéos: [VIDEO: url]
+        - Audio: [AUDIO: url]
+        """
+        if not markdown_content:
+            return
+
+        media_processor = MediaProcessorSync(self.db, self.http_client)
+        import re
+
+        # Pattern 1: Images markdown ![alt](url)
+        image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+        for match in re.finditer(image_pattern, markdown_content):
+            media_url = match.group(2).strip()
+
+            try:
+                if media_url.startswith("data:"):
+                    continue
+
+                if media_processor.media_exists(expr.id, media_url):
+                    continue
+
+                media_type = models.MediaType.IMAGE
+                media_payload: Dict[str, Any] = {"url": media_url, "type": media_type}
+
+                if analyze_media:
+                    analysis = media_processor.analyze_image(media_url)
+                    if not analysis.get("error"):
+                        media_payload.update(
+                            {
+                                "width": analysis.get("width"),
+                                "height": analysis.get("height"),
+                                "file_size": analysis.get("file_size"),
+                                "format": analysis.get("format"),
+                                "has_transparency": analysis.get("has_transparency"),
+                                "aspect_ratio": analysis.get("aspect_ratio"),
+                                "dominant_colors": analysis.get("dominant_colors"),
+                                "websafe_colors": analysis.get("websafe_colors"),
+                                "image_hash": analysis.get("image_hash"),
+                                "exif_data": analysis.get("exif_data"),
+                                "color_mode": analysis.get("color_mode"),
+                                "mime_type": analysis.get("mime_type"),
+                                "processed_at": datetime.now(timezone.utc),
+                                "is_processed": True,
+                                "analysis_error": None,
+                                "processing_error": None,
+                            }
+                        )
+                    else:
+                        media_payload["analysis_error"] = analysis["error"]
+                else:
+                    media_payload.setdefault("is_processed", False)
+
+                media_processor.create_media(expr.id, media_payload)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error processing markdown image %s: %s", media_url, exc)
+                self.db.rollback()
+
+        # Pattern 2: Vidéos [VIDEO: url]
+        video_pattern = r'\[VIDEO:\s*([^\]]+)\]'
+        for match in re.finditer(video_pattern, markdown_content, flags=re.IGNORECASE):
+            media_url = match.group(1).strip()
+
+            try:
+                if media_url.startswith("data:"):
+                    continue
+
+                if media_processor.media_exists(expr.id, media_url):
+                    continue
+
+                media_payload = {"url": media_url, "type": models.MediaType.VIDEO, "is_processed": False}
+                media_processor.create_media(expr.id, media_payload)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error processing markdown video %s: %s", media_url, exc)
+                self.db.rollback()
+
+        # Pattern 3: Audio [AUDIO: url]
+        audio_pattern = r'\[AUDIO:\s*([^\]]+)\]'
+        for match in re.finditer(audio_pattern, markdown_content, flags=re.IGNORECASE):
+            media_url = match.group(1).strip()
+
+            try:
+                if media_url.startswith("data:"):
+                    continue
+
+                if media_processor.media_exists(expr.id, media_url):
+                    continue
+
+                media_payload = {"url": media_url, "type": models.MediaType.AUDIO, "is_processed": False}
+                media_processor.create_media(expr.id, media_payload)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error processing markdown audio %s: %s", media_url, exc)
+                self.db.rollback()
+
+        logger.debug("Extracted media from markdown content of %s", expr_url)
 
     def _extract_and_save_media(
         self,

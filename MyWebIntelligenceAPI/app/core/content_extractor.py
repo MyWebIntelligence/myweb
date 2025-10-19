@@ -51,7 +51,7 @@ def get_readable_content(html: str) -> Tuple[str, BeautifulSoup, Optional[str]]:
     print("Trafilatura failed, falling back to BeautifulSoup with smart extraction.")
 
     # Try smart extraction first (intelligent heuristics)
-    smart_content = _smart_content_extraction(soup)
+    smart_content, filtered_soup_elem = _smart_content_extraction(soup)
     if smart_content and len(smart_content) > 100:
         print("Smart extraction succeeded on BeautifulSoup.")
         return smart_content, soup, None
@@ -62,10 +62,15 @@ def get_readable_content(html: str) -> Tuple[str, BeautifulSoup, Optional[str]]:
     text = soup.get_text(separator='\n', strip=True)
     return text, soup, None
 
-def _smart_content_extraction(soup: BeautifulSoup) -> Optional[str]:
+def _smart_content_extraction(soup: BeautifulSoup) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
     """
     Extraction intelligente basée sur les heuristiques de contenu principal.
     Inspiré de la logique Mercury Parser du système ancien.
+
+    Returns:
+        Tuple[text_content, filtered_soup_element]:
+            - text_content: Texte extrait du contenu principal
+            - filtered_soup_element: Élément BeautifulSoup du contenu principal (pour extraction liens/médias)
     """
     # Priorité aux sélecteurs de contenu communs
     content_selectors = [
@@ -73,7 +78,7 @@ def _smart_content_extraction(soup: BeautifulSoup) -> Optional[str]:
         '.entry-content', '.article-content', '.post-body', '.story-body',
         '#content', '#main-content', '.main-content', '.article-body'
     ]
-    
+
     for selector in content_selectors:
         elements = soup.select(selector)
         if elements:
@@ -81,16 +86,16 @@ def _smart_content_extraction(soup: BeautifulSoup) -> Optional[str]:
             largest_element = max(elements, key=lambda x: len(x.get_text(strip=True)))
             text_content = largest_element.get_text(separator='\n', strip=True)
             if len(text_content) > 200:
-                return text_content
-    
+                return text_content, largest_element  # ✅ Retourner aussi l'élément filtré
+
     # Fallback: chercher les paragraphes les plus substantiels
     paragraphs = soup.find_all('p')
     if paragraphs:
         content_paragraphs = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 50]
         if content_paragraphs:
-            return '\n\n'.join(content_paragraphs)
-    
-    return None
+            return '\n\n'.join(content_paragraphs), None  # Pas de soup filtré dans ce cas
+
+    return None, None
 
 def get_metadata(soup: BeautifulSoup, url: str) -> Dict[str, Any]:
     """
@@ -285,7 +290,15 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
     3. BeautifulSoup fallback
 
     Returns:
-        Dict with: readable, content (raw HTML), soup, extraction_source, media_list, links
+        Dict with:
+            - readable: Contenu principal extrait (markdown ou texte)
+            - content: HTML brut complet
+            - soup: BeautifulSoup du HTML complet
+            - filtered_soup: BeautifulSoup du contenu principal uniquement (None si Trafilatura/markdown)
+            - extraction_source: Source d'extraction ('trafilatura_direct', 'archive_org', 'beautifulsoup_smart', 'beautifulsoup_basic', 'all_failed')
+            - media_list: Liste des médias extraits
+            - links: Liste des liens extraits
+            - title, description, keywords, language, canonical_url, published_at: Métadonnées
     """
     soup = None
     readable_html = None
@@ -328,6 +341,7 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
                 'content': raw_html,
                 'soup': soup,
                 'readable_html': readable_html,
+                'filtered_soup': None,  # Trafilatura: pas besoin de soup filtré (markdown déjà extrait)
                 'extraction_source': 'trafilatura_direct',
                 'media_list': media_list,
                 'links': links,
@@ -353,13 +367,14 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
         metadata = get_metadata(soup, url)
 
         # Try smart extraction first (intelligent heuristics)
-        smart_content = _smart_content_extraction(soup)
+        smart_content, smart_soup_element = _smart_content_extraction(soup)
         if smart_content and len(smart_content) > 100:
             return {
                 'readable': smart_content,
                 'content': raw_html,
                 'soup': soup,
                 'readable_html': None,
+                'filtered_soup': smart_soup_element,  # ✅ Élément filtré (article/main/etc.)
                 'extraction_source': 'beautifulsoup_smart',
                 'media_list': [],
                 'links': [],
@@ -372,7 +387,7 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
             }
 
         # Final fallback: basic text extraction
-        clean_html(soup)
+        clean_html(soup)  # Supprime nav, footer, aside, script, style
         text = soup.get_text(separator='\n', strip=True)
         if len(text) > 100:
             return {
@@ -380,6 +395,7 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
                 'content': raw_html,
                 'soup': soup,
                 'readable_html': None,
+                'filtered_soup': soup,  # ✅ Soup nettoyé (sans nav/footer/aside)
                 'extraction_source': 'beautifulsoup_basic',
                 'media_list': [],
                 'links': [],
@@ -398,6 +414,7 @@ async def get_readable_content_with_fallbacks(url: str, html: Optional[str] = No
         'content': raw_html,
         'soup': soup,
         'readable_html': None,
+        'filtered_soup': None,  # Aucune extraction réussie
         'extraction_source': 'all_failed',
         'media_list': [],
         'links': [],
@@ -470,6 +487,7 @@ async def _extract_from_archive_org(url: str) -> Optional[Dict[str, Any]]:
                     'content': archived_html,
                     'soup': soup,
                     'readable_html': readable_html,
+                    'filtered_soup': None,  # Archive.org: Trafilatura markdown (pas besoin de soup filtré)
                     'extraction_source': 'archive_org',
                     'media_list': media_list,
                     'links': links,

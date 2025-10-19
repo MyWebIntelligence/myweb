@@ -33,15 +33,10 @@
    - Database-ready output format
 
 4. **Crawler Integration**
-   - **Async Crawler** ([crawler_engine.py](../../MyWebIntelligenceAPI/app/core/crawler_engine.py))
-     - Sentiment analysis after content extraction
-     - Non-blocking error handling
-     - Logging and monitoring
-
    - **Sync Crawler** ([crawler_engine_sync.py](../../MyWebIntelligenceAPI/app/core/crawler_engine_sync.py))
-     - Same logic as async (parité maintained!)
-     - asyncio compatibility for Celery workers
-     - Identical logging format
+     - Sentiment analysis après l'extraction de contenu
+     - Gestion des erreurs non bloquante
+     - Logs et métriques alignés avec le reste du pipeline
 
 5. **API Schemas** ([expression.py](../../MyWebIntelligenceAPI/app/schemas/expression.py))
    - Updated `ExpressionUpdate` schema
@@ -138,16 +133,16 @@ MyWebIntelligenceAPI/
 
 **Overhead**: ~40 bytes per expression (negligible)
 
-### ✅ Double Crawler Parity
+### ✅ Moteur unique
 
-**Decision**: Identical logic in async and sync crawlers
+**Decision**: Centraliser toute la logique dans `SyncCrawlerEngine`
 
 **Rationale**:
-- Prevents inconsistencies (lesson from previous bugs)
-- Easier maintenance
-- Predictable behavior
+- Évite les divergences historiques entre deux moteurs
+- Simplifie la maintenance
+- Garantit un comportement prédictible
 
-**Implementation**: Same code structure, same logging format
+**Implementation**: Code partagé via `SentimentService`, instrumentation identique sur toutes les tâches
 
 ---
 
@@ -319,7 +314,7 @@ docker logs mywebclient-api-1 | grep "Sentiment.*failed"
 
 1. **Modular Design**: Clean separation of provider, service, and crawler
 2. **Hybrid Approach**: Flexibility without vendor lock-in
-3. **Double Crawler Parity**: No inconsistencies
+3. **Moteur unique**: Zéro divergence dans les traitements
 4. **Non-Blocking**: Zero impact on existing crawl functionality
 5. **Comprehensive Tests**: Caught edge cases early
 
@@ -327,7 +322,7 @@ docker logs mywebclient-api-1 | grep "Sentiment.*failed"
 
 1. **TextBlob Accuracy**: Moderate for complex sentiment (solved with LLM option)
 2. **Language Support**: Limited to FR/EN (acceptable trade-off)
-3. **Async/Sync Compatibility**: Required careful asyncio handling in sync crawler
+3. **Suppression de l'ancien moteur parallèle**: Revue complète du pipeline pour éviter tout reliquat
 
 ### 🔮 Future Improvements
 

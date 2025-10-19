@@ -13,7 +13,7 @@
 ### 1.2 Services et moteur de crawl - ✅ AMÉLIORÉ
 - ~~Le moteur ne crée plus de `ExpressionLink`~~ → **CORRIGÉ** : Implémentation complète dans `_extract_and_save_links` avec métadonnées (anchor_text, link_type, rel_attribute)
 - ~~Fallbacks avancés non portés~~ → **CORRIGÉ** : Ajout du fallback Archive.org dans `get_readable_content_with_fallbacks()` avec extraction Trafilatura
-- ~~L'API n'offre pas d'équivalent à `medianalyse`~~ → **CORRIGÉ** : Endpoint `/medianalyse` complet avec tâche Celery asynchrone, traitement par batch et filtres
+- ~~L'API n'offre pas d'équivalent à `medianalyse`~~ → **CORRIGÉ** : Endpoint `/medianalyse` complet avec tâche Celery dédiée, traitement par batch et filtres
 - ~~Pipeline ne gère pas les approbations~~ → **RÉSOLU** : Colonne `approved_at` présente, logique de mise à jour intégrée
 
 ### 1.3 Orchestration, tâches et endpoints - ✅ CORRIGÉ
@@ -33,7 +33,7 @@
 - **CLI `land crawl`** : ✅ **COMPLET** - API fonctionnelle avec WebSocket, création de liens, fallbacks Archive.org
 - **CLI `land readable`** : ✅ **COMPLET** - Pipeline opérationnel avec extraction de contenu, fallbacks Archive.org
 - **CLI `land consolidate`** : ✅ **FONCTIONNEL** - Tâche Celery opérationnelle avec service de réparation
-- **CLI `land medianalyse`** : ✅ **COMPLET** - Endpoint fonctionnel avec tâche Celery asynchrone, traitement par batch, filtres depth/minrel
+- **CLI `land medianalyse`** : ✅ **COMPLET** - Endpoint fonctionnel avec tâche Celery dédiée, traitement par batch, filtres depth/minrel
 - **CLI `land urlist` / `addurl` / `addterm`** : ✅ **FONCTIONS CRUD EXISTANTES** - Base présente dans crud_land
 - **CLI `land seorank`** : 🟡 **ENDPOINT CRÉÉ** - Endpoint disponible, intégration API SEO à implémenter
 - **CLI `land llm_validate`** : ✅ **INTÉGRÉ** - Option `enable_llm` dans crawl et readable, OpenRouter configuré
@@ -50,7 +50,7 @@
 ### ✅ Phase 2 – Remise à niveau du moteur de crawl - TERMINÉE
 1. ✅ Création `ExpressionLink` implémentée avec métadonnées complètes
 2. ✅ Fallback Archive.org intégré dans l'extracteur de contenu
-3. ✅ Mode concurrent existant avec `httpx.AsyncClient`
+3. ✅ Mode concurrent hérité (client httpx non bloquant) — retiré en V2
 4. ✅ Remontée de métadonnées corrigée (`lang`, `approved_at`, etc.)
 5. ✅ Statistiques Land/Domain mises à jour
 
@@ -72,11 +72,11 @@
 - **Modèle de données** : 100% ✅
 - **Moteur de crawl** : 100% ✅ (fallbacks Archive.org + liens)  
 - **API REST** : 100% ✅ (tous endpoints créés et fonctionnels)
-- **Tâches asynchrones** : 100% ✅ (WebSocket + imports + medianalyse complet)
+- **Tâches en arrière-plan** : 100% ✅ (WebSocket + imports + medianalyse complet)
 - **Configuration** : 100% ✅
 
 ### Améliorations apportées :
-- Architecture async/await moderne
+- Architecture évènementielle moderne
 - WebSocket temps réel intégré
 - Fallbacks robustes (Archive.org)
 - Graphe de liens complet avec métadonnées
@@ -156,7 +156,7 @@ Les implémentations détaillées des pipelines `readable`, `medianalyse`, `seor
   - Source d'extraction tracée (`trafilatura_direct`, `archive_org`, `beautifulsoup_fallback`)
 
 - **5. ✅ Couvrir l'Archive fallback** :
-  - Utilisation de `trafilatura.fetch_url` via `asyncio.to_thread`
+  - Utilisation de `trafilatura.fetch_url` via exécution déportée (thread pool)
   - Pipeline complète : fetch → extraction markdown+HTML → enrichissement médias → extraction liens
   - Résolution URL et détection médias identiques au legacy
 

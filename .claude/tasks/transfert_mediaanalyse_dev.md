@@ -9,7 +9,7 @@
 - **Séléction médias** : jointure `Media`→`Expression`, filtres `depth`, `relevance`, `limit` (legacy). L’API reprend depth/minrel.
 - **Analyse** : MediaAnalyzer (legacy) vs `MediaProcessor` (API) → extraction dimensions, format, EXIF, couleurs, perceptual hash.
 - **Mise à jour DB** : champs media (width, height, dominant_colors, hash, is_processed, analyzed_at, etc.).
-- **Workflow** : CLI -> boucle sync, API -> Celery async (batch + group tasks).
+- **Workflow** : CLI -> boucle synchrone, API -> Celery (tâches en arrière-plan par batch + group).
 - **Journalisation** : logs `MEDIA ANALYSIS STARTED/COMPLETED`, stats (analysed/failed).
 - **Tâche Celery** : `analyze_land_media_task` déjà implémentée.
 
@@ -87,7 +87,7 @@
 - **Volume média important** : batch + group tasks déjà en place; surveiller limites concurrency httpx.
 - **Type non supporté** : fallback/skip loggés; config pour activer/désactiver.
 - **Resources CPU** : analyser usage PIL/sklearn (option de downscale).
-- **Double crawler** : Non concerné directement pour l'analyse, mais **critique pour la création des entrées `Media`**. S'assurer que `crawler_engine.py` et `crawler_engine_sync.py` créent les enregistrements `Media` de manière identique.
+- **Moteur unique** : la création des entrées `Media` repose désormais uniquement sur `crawler_engine_sync.py`. Vérifier que ce module alimente correctement la table `media`.
 
 ## 9. Prochaines étapes
 1. Conduire l’audit parité (MA-01) et lister gaps.

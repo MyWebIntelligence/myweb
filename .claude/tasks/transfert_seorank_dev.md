@@ -34,13 +34,13 @@
 
 ## 4. Périmètre du transfert
 - Implémenter l’équivalent `update_seorank_for_land` côté services API.
-- Offrir un endpoint REST (v1/v2) + tâche Celery pour traitement asynchrone avec logs + WebSocket.
+- Offrir un endpoint REST (v1/v2) + tâche Celery pour traitement en arrière-plan avec logs + WebSocket.
 - Assurer la compatibilité avec `ExportService` (CSV/GEXF) en parse le JSON comme legacy.
 - Ajouter outils de reprocessing + tests automatiques.
 
 ## 5. Architecture cible
 1. **Service** `app/services/seorank_service.py`
-   - Méthode principale `async run_batch_for_land(land_id, options)` qui orchestre la sélection, l'appel API et la persistance.
+   - Méthode principale `run_batch_for_land(land_id, options)` qui orchestre la sélection, l'appel API et la persistance.
    - Logique de sélection robuste (filtres, `seorank_processed_at` pour `force_refresh`).
    - Persistance par lots (ex: `commit` toutes les 100 expressions) pour optimiser les transactions.
 2. **Tâche Celery** `app/tasks/seorank_task.py`
@@ -57,7 +57,7 @@
 5. **Config** :
    - `app/config.py` : `SEORANK_API_BASE_URL`, `SEORANK_API_KEY`, `SEORANK_TIMEOUT`, `SEORANK_REQUEST_DELAY`, `ENABLE_SEORANK`.
 6. **Client API** `app/core/clients/seorank_client.py`
-   - Wrapper `httpx` unique gérant les modes `async` et `sync` pour éviter la duplication de logique (respect du principe "Double Crawler").
+   - Wrapper `httpx` unique conçu pour le moteur synchrone et réutilisable par Celery.
 
 ## 6. Étapes de livraison
 
@@ -67,7 +67,7 @@
 - Préparer mocks HTTP (respx) + dataset test.
 
 ### Phase 1 — Service & client API (1 sprint)
-- Créer `SeorankClient` (wrapper `httpx` gérant sync/async) avec retries + logs `[seorank]`.
+- Créer `SeorankClient` (wrapper `httpx` réutilisable par API et Celery) avec retries + logs `[seorank]`.
 - Implémenter `SeorankService` (sélection expressions via SQLAlchemy query, respect filtres).
 - Ecrire tests unitaires (mocks HTTP) + snapshot payload.
 
@@ -110,7 +110,7 @@
 ## 9. Risques & mitigations
 - **Quota API SEO Rank** : throttle via `SEORANK_REQUEST_DELAY`, planifier cache/memoization.
 - **JSON schema variable** : utiliser robustesse du parsing (clé optionnelle).
-- **Désynchronisation sync/async** : Utiliser un client HTTP unique qui gère les deux modes pour centraliser la logique.
+- **Moteur unique** : S'appuyer sur un client HTTP mutualisé pour éviter toute divergence entre API et worker.
 - **Sécurité clé API** : stocker dans secrets/ENV, ne pas logger la clé.
 
 ## 10. Prochaines étapes immédiates
