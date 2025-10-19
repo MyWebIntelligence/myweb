@@ -19,7 +19,7 @@ import httpx
 from sqlalchemy.orm import Session, selectinload
 
 from app.core import content_extractor, text_processing
-from app.core.media_processor_sync import MediaProcessorSync
+from app.core.media_processor import MediaProcessorSync
 from app.db import models
 from app.services.sentiment_service import SentimentService
 from app.services.quality_scorer import QualityScorer

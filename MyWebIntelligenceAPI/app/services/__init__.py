@@ -1,11 +1,8 @@
 """
-Module Services - Logique métier de l'application
+Module Services - Logique métier de l'application (V2 - Sync only)
 """
 
-from .embedding_service import EmbeddingService
-from .text_processor_service import TextProcessorService
+# Importing only services that exist in V2
+# Async services (embedding_service, readable_*) moved to projetV3/
 
-__all__ = [
-    "EmbeddingService",
-    "TextProcessorService"
-]
+__all__ = []

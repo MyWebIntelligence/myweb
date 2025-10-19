@@ -9,9 +9,9 @@ from typing import Dict, Any
 from celery import current_task
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.tasks.celery_app import celery_app
-from app.db.database import get_db_session
-from app.services.export_service import ExportService
+from app.core.celery_app import celery_app
+from app.db.session import SessionLocal
+from app.services.export_service_sync import ExportServiceSync
 from app.crud.crud_land import land as land_crud
 
 

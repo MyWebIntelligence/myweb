@@ -1,30 +1,19 @@
-import asyncio
 import logging
 from datetime import datetime, timezone
 
 from app.core.celery_app import celery_app
-from app.core.crawler_engine_sync import SyncCrawlerEngine
-from app.core.websocket import WebSocketManager
+from app.core.crawler_engine import SyncCrawlerEngine
 from app.db import models
 from app.db.models import CrawlStatus
 from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
-websocket_manager = WebSocketManager()
 
-
+# WebSocket support removed in V2 (moved to projetV3)
+# Crawl progress can be monitored by polling the job status endpoint
 def _send_progress(ws_channel: str | None, processed: int, total: int, message: str) -> None:
-    """Helper to push crawl progress over the async websocket manager."""
-    if not ws_channel:
-        return
-
-    try:
-        asyncio.run(websocket_manager.send_crawl_progress(ws_channel, processed, total, message))
-    except RuntimeError:
-        # If we're already inside a running loop (rare in Celery prefork), create a fresh one.
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(websocket_manager.send_crawl_progress(ws_channel, processed, total, message))
-        loop.close()
+    """Placeholder - WebSocket support removed in V2."""
+    pass
 
 
 @celery_app.task(name="tasks.crawl_land_task", bind=True)
