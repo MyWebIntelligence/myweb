@@ -23,7 +23,7 @@ from app.services.crawling_service import start_crawl_for_land
 from app.schemas.user import User
 from app.api.versioning import get_api_version_from_request
 from pydantic import BaseModel
-from app.core.media_processor import MediaProcessor
+from app.core.media_processor import MediaProcessorSync
 from app.crud import crud_media
 from app.db import models
 import time

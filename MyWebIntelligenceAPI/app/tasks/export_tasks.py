@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.celery_app import celery_app
 from app.db.session import SessionLocal
-from app.services.export_service_sync import ExportServiceSync
+from app.services.export_service_sync import SyncExportService
 from app.crud.crud_land import land as land_crud
 
 

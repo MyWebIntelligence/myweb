@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from celery.result import AsyncResult
 
 from app.api.dependencies import get_current_active_user
-from app.services.embedding_service import EmbeddingService
+# V2 Simplification: embedding_service moved to projetV3
+# from app.services.embedding_service import EmbeddingService
 from app.services.text_processor_service import TextProcessorService
 from app.crud.crud_paragraph import paragraph as paragraph_crud
 from app.db.session import get_sync_db
@@ -35,7 +36,8 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Services
-embedding_service = EmbeddingService()
+# V2: Embedding disabled (moved to projetV3)
+# embedding_service = EmbeddingService()
 
 
 def _ensure_land_access(db: Session, land_id: int, user: User) -> Land:
