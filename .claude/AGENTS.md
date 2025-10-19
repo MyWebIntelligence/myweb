@@ -67,6 +67,16 @@ docker exec mywebclient-db-1 psql -U mwi_user -d mwi_db -c \
 
 ---
 
+## ✅ Recommandations Dev 2025-10
+- **Dupliquer et tester chaque évolution de crawl** : refléter les changements dans `app/core/crawler_engine.py` et `app/core/crawler_engine_sync.py`, puis exécuter `tests/test-crawl-async.sh` et `tests/test-crawl-simple.sh` pour vérifier la parité (voir `.claude/tasks/align_sync_async.md` et `.claude/tasks/README_TEST_ASYNC.md`).
+- **Respecter les attributs ORM exacts** : utiliser les noms mappés (`expr.lang`, `expr.content`, etc.) plutôt que les noms de colonnes (`"language"`) pour éviter les écritures fantômes (`.claude/tasks/LANGUAGE_DETECTION_FIX.md`).
+- **Préserver la chaîne complète d’extraction** : conserver l’ordre Trafilatura → Archive.org → requêtes directes et propager toutes les métadonnées (`title`, `description`, `keywords`, `http_status`, `content`) conformément à `.claude/tasks/_TRANSFERT_API_CRAWL.md`.
+- **Réutiliser l’enrichissement markdown** : toute modification du readable ou des médias doit passer par `content_extractor.get_readable_content_with_fallbacks()` afin de garder les marqueurs `[IMAGE]/[VIDEO]/[AUDIO]` et la création de liens via `_create_links_from_markdown`.
+- **Nouvelles métriques = double intégration + traçabilité** : Quality Score ou Sentiment exigent un service dédié, l’appel depuis les deux crawlers, le stockage du score et des métadonnées (flags, modèle, timestamp) ainsi qu’un script de retraitement batch (cf. `.claude/tasks/quality_dev.md`, `.claude/tasks/sentiment_dev.md`).
+- **Documenter et monitorer dès la PR** : ajouter la note correspondante dans `.claude/docs`, fournir un test opérateur (curl/script) et émettre des logs INFO explicites pour accélérer le debug en staging.
+
+---
+
 ## 🔴 ⚠️ ERREUR CATASTROPHIQUE - DATABASE INITIALIZATION ⚠️ 🔴
 
 ### **INCIDENT DU 17 OCTOBRE 2025 : 2 HEURES PERDUES SUR ALEMBIC**

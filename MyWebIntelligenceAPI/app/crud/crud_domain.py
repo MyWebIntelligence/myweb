@@ -25,9 +25,12 @@ class CRUDDomain:
 
     async def get_or_create(self, db: AsyncSession, name: str, land_id: int) -> models.Domain:
         """
-        Récupère un domaine par nom ou le crée s'il n'existe pas.
+        Récupère un domaine par nom ET land_id ou le crée s'il n'existe pas.
         """
-        query = select(models.Domain).where(models.Domain.name == name)
+        query = select(models.Domain).where(
+            models.Domain.name == name,
+            models.Domain.land_id == land_id  # FIX: Filter by land_id too!
+        )
         result = await db.execute(query)
         db_domain = result.scalar_one_or_none()
 
@@ -37,7 +40,7 @@ class CRUDDomain:
         domain_in = DomainCreate(name=name, land_id=land_id)
         new_domain = models.Domain(**domain_in.model_dump())
         db.add(new_domain)
-        await db.commit()
+        await db.flush()  # FIX: Use flush instead of commit to avoid nested transactions
         await db.refresh(new_domain)
         return new_domain
 

@@ -1,150 +1,147 @@
+"""
+Synchronous version of the crawler engine for Celery workers.
+
+This avoids AsyncSession usage which caused greenlet issues under the prefork
+worker pool. It re-implements the handful of DB operations required for the
+crawl pipeline using a regular SQLAlchemy Session.
+"""
+
+from __future__ import annotations
+
+import asyncio
 import logging
-from typing import Tuple, Optional
+from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session, selectinload
 
-from app.schemas.expression import ExpressionUpdate
-
-from app.crud import crud_expression, crud_land
+from app.core import content_extractor, text_processing
+from app.core.media_processor_sync import MediaProcessorSync
 from app.db import models
-from app.core import content_extractor, text_processing, media_processor
 from app.services.sentiment_service import SentimentService
 from app.services.quality_scorer import QualityScorer
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-class CrawlerEngine:
-    def __init__(self, db: AsyncSession):
+
+class SyncCrawlerEngine:
+    """Crawler engine relying on synchronous SQLAlchemy session and httpx client."""
+
+    def __init__(self, db: Session):
         self.db = db
-        self.http_client = httpx.AsyncClient(timeout=15.0, follow_redirects=True)
+        self.http_client = httpx.Client(timeout=15.0, follow_redirects=True)
         self.sentiment_service = SentimentService()  # Initialize sentiment service
         self.quality_scorer = QualityScorer()  # Initialize quality scorer
 
-    async def prepare_crawl(
+    # ------------------------------------------------------------------ #
+    # High level API                                                     #
+    # ------------------------------------------------------------------ #
+    def prepare_crawl(
         self,
         land_id: int,
         limit: int = 0,
         depth: Optional[int] = None,
         http_status: Optional[str] = None,
-    ) -> Tuple[Optional[models.Land], list[models.Expression]]:
-        """Prépare la liste des expressions à crawler pour un land."""
-        # First, get the land to access start_urls
-        land = await crud_land.land.get(self.db, id=land_id)
+    ) -> Tuple[Optional[models.Land], List[models.Expression]]:
+        """Return the land and the ordered list of expressions to crawl."""
+        land = self.db.query(models.Land).options(selectinload(models.Land.words)).filter(models.Land.id == land_id).first()
         if not land:
-            logger.error(f"Land {land_id} not found")
+            logger.error("Land %s not found", land_id)
             return None, []
 
-        # Create expressions from start_urls if they exist and no expressions exist yet
         if land.start_urls:
-            logger.info(f"Found {len(land.start_urls)} start URLs for land {land_id}")
-
-            # Check if we already have expressions for this land
-            existing_expressions = await crud_expression.expression.get_expressions_to_crawl(
-                self.db, land_id=land_id, limit=1
-            )
-
-            # If no expressions exist, create them from start_urls
-            if not existing_expressions:
-                logger.info("No existing expressions found. Creating expressions from start_urls...")
+            existing_expr = self._get_expressions_to_crawl_query(land_id, limit=1).first()
+            if not existing_expr:
                 for url in land.start_urls:
                     try:
-                        existing = await crud_expression.expression.get_by_url_and_land(
-                            self.db, url=url, land_id=land_id
-                        )
-                        if not existing:
-                            await crud_expression.expression.get_or_create_expression(
-                                self.db, land_id=land_id, url=url, depth=0
-                            )
-                            logger.info(f"Created expression for URL: {url}")
-                    except Exception as e:
-                        logger.error(f"Failed to create expression for {url}: {e}")
+                        self._get_or_create_expression(land_id, url, depth=0)
+                        logger.info("Created expression for URL: %s", url)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("Failed to create expression for %s: %s", url, exc)
+                self.db.commit()
 
-                await self.db.commit()
-
-        expressions = await crud_expression.expression.get_expressions_to_crawl(
-            self.db, land_id=land_id, limit=limit, depth=depth, http_status=http_status
+        expressions = self._fetch_expressions_to_crawl(
+            land_id=land_id,
+            limit=limit,
+            depth=depth,
+            http_status=http_status,
         )
-
         logger.info("Found %s expressions to crawl for land %s", len(expressions), land_id)
         return land, expressions
 
-    async def crawl_land(
+    def crawl_land(
         self,
         land_id: int,
         limit: int = 0,
         depth: Optional[int] = None,
         http_status: Optional[str] = None,
         analyze_media: bool = False,
-    ) -> Tuple[int, int, dict]:
-        land, expressions = await self.prepare_crawl(land_id, limit=limit, depth=depth, http_status=http_status)
+    ) -> Tuple[int, int, Dict[str, int]]:
+        """Crawl the land synchronously and return processed, error counts, stats."""
+        land, expressions = self.prepare_crawl(
+            land_id,
+            limit=limit,
+            depth=depth,
+            http_status=http_status,
+        )
         if land is None:
             return 0, 0, {}
 
-        processed_count, error_count, http_stats = await self.crawl_expressions(
-            expressions, analyze_media=analyze_media
-        )
-        await self.http_client.aclose()
-        return processed_count, error_count, http_stats
+        processed, errors, stats = self.crawl_expressions(expressions, analyze_media=analyze_media)
+        self.http_client.close()
+        return processed, errors, stats
 
-    async def crawl_expressions(
-        self, expressions: list[models.Expression], analyze_media: bool = False
-    ) -> Tuple[int, int, dict]:
-        from collections import defaultdict
+    def crawl_expressions(
+        self,
+        expressions: Iterable[models.Expression],
+        analyze_media: bool = False,
+    ) -> Tuple[int, int, Dict[str, int]]:
+        """Process expressions sequentially."""
+        processed = 0
+        errors = 0
+        http_stats: Dict[str, int] = defaultdict(int)
 
-        processed_count = 0
-        error_count = 0
-        http_stats = defaultdict(int)
-
-        expression_ids = [
-            getattr(expr, "id", None)
-            for expr in expressions
-            if getattr(expr, "id", None) is not None
-        ]
-
-        for expr_id in expression_ids:
-            expr = await self.db.get(models.Expression, expr_id)
+        for expression in expressions:
+            expr = self.db.query(models.Expression).filter(models.Expression.id == expression.id).first()
             if not expr:
-                logger.warning("Expression %s not found during crawl", expr_id)
+                logger.warning("Expression %s not found during crawl", expression.id)
                 continue
 
             expr_url = getattr(expr, "url", None)
+            if not expr_url:
+                logger.warning("Expression %s has no URL", expr.id)
+                continue
+
             try:
-                status_code = await self.crawl_expression(expr, analyze_media=analyze_media)
-                await self.db.commit()
-                processed_count += 1
-                if status_code:
-                    http_stats[status_code] += 1
-            except Exception as e:
-                logger.error(
-                    "Failed to crawl expression %s (%s): %s",
-                    getattr(expr, "id", "unknown"),
-                    expr_url,
-                    e,
-                )
-                await self.db.rollback()
-                error_count += 1
-                http_stats['error'] = http_stats.get('error', 0) + 1
+                status_code = self.crawl_expression(expr, analyze_media=analyze_media)
+                self.db.commit()
+                processed += 1
+                if status_code is not None:
+                    http_stats[str(status_code)] += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to crawl expression %s (%s): %s", expr.id, expr_url, exc)
+                self.db.rollback()
+                errors += 1
+                http_stats["error"] += 1
 
-        return processed_count, error_count, dict(http_stats)
+        return processed, errors, dict(http_stats)
 
-    async def crawl_expression(self, expr: models.Expression, analyze_media: bool = False):
-        # Store URL string to avoid DetachedInstanceError later
+    def crawl_expression(self, expr: models.Expression, analyze_media: bool = False) -> Optional[int]:
+        """Fetch, analyse and store an expression."""
         expr_url = str(expr.url)
-        expr_id = expr.id
-        expr_land_id = expr.land_id
-        expr_depth = expr.depth
-        
         logger.info("Crawling URL: %s (analyze_media=%s)", expr_url, analyze_media)
-        
-        # 1. Fetch content
-        content_type = None
-        content_length = None
+
+        html_content = ""
+        http_status_code: Optional[int] = None
+        content_type: Optional[str] = None
+        content_length: Optional[int] = None
 
         try:
-            response = await self.http_client.get(expr_url)
+            response = self.http_client.get(expr_url)
             response.raise_for_status()
             html_content = response.text
             http_status_code = response.status_code
@@ -157,33 +154,78 @@ class CrawlerEngine:
                     content_length = int(content_length_str)
                 except ValueError:
                     pass
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error for {expr_url}: {e}")
-            html_content = ""
-            http_status_code = e.response.status_code
-            if e.response:
-                content_type = e.response.headers.get('content-type', None)
-        except httpx.RequestError as e:
-            logger.error(f"Request error for {expr_url}: {e}")
-            html_content = ""
-            http_status_code = 0 # Custom code for request errors
+        except httpx.HTTPStatusError as exc:
+            logger.error("HTTP error for %s: %s", expr_url, exc)
+            html_content = exc.response.text if exc.response is not None else ""
+            http_status_code = exc.response.status_code if exc.response is not None else None
+            if exc.response is not None:
+                content_type = exc.response.headers.get('content-type', None)
+        except httpx.RequestError as exc:
+            logger.error("Request error for %s: %s", expr_url, exc)
+            http_status_code = 0
 
-        update_data = {
-            "http_status": str(http_status_code),  # Store as string (legacy format)
-            "crawled_at": datetime.utcnow(),
+        # Extract HTTP headers: Last-Modified and ETag
+        last_modified_str = None
+        etag_str = None
+        if http_status_code and http_status_code < 400:
+            try:
+                if hasattr(response, 'headers'):
+                    last_modified_str = response.headers.get('last-modified', None)
+                    etag_str = response.headers.get('etag', None)
+            except Exception:
+                pass
+
+        update_data: Dict[str, Optional[str]] = {
+            "http_status": http_status_code,
             "content_type": content_type,
-            "content_length": content_length
+            "content_length": content_length,
+            "last_modified": last_modified_str,
+            "etag": etag_str,
+            "crawled_at": datetime.utcnow(),
         }
 
-        # 2. Extract content and metadata with fallbacks (try even if no initial content)
-        extraction_result = await content_extractor.get_readable_content_with_fallbacks(expr_url, html_content)
+        # Extract readable content - function now returns a Dict, not tuple
+        extraction_result = {}
+        extraction_source = "unknown"
+        try:
+            extractor = content_extractor.ContentExtractor()
+            extraction_result = asyncio.run(
+                extractor.get_readable_content_with_fallbacks(expr_url, html_content)
+            )
+            extraction_source = extraction_result.get('extraction_source', 'unknown')
+            logger.info("Crawling %s using %s", expr_url, extraction_source)
+        except RuntimeError:
+            # We might already be running in an event loop if the caller wraps asyncio.run
+            extractor = content_extractor.ContentExtractor()
+            extraction_result = asyncio.get_event_loop().run_until_complete(
+                extractor.get_readable_content_with_fallbacks(expr_url, html_content)
+            )
+            extraction_source = extraction_result.get('extraction_source', 'unknown')
+            logger.info("Crawling %s using %s", expr_url, extraction_source)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Readable extraction failed for %s: %s", expr_url, exc)
+            extraction_result = {}
 
+        # Extract values from result dict
         readable_content = extraction_result.get('readable')
-        extraction_source = extraction_result.get('extraction_source', 'unknown')
-        media_list = extraction_result.get('media_list', [])
-        links = extraction_result.get('links', [])
+        soup = extraction_result.get('soup')  # Needed for links/media extraction
+        metadata = {
+            'title': extraction_result.get('title', expr_url),
+            'description': extraction_result.get('description'),
+            'keywords': extraction_result.get('keywords'),
+            'lang': extraction_result.get('language'),
+            'canonical_url': extraction_result.get('canonical_url'),
+            'published_at': extraction_result.get('published_at')
+        }
 
-        # Store raw HTML content (legacy field)
+        # Debug logging
+        logger.info("Extraction result for %s: readable=%s chars, title=%s, soup=%s",
+                   expr_url,
+                   len(readable_content) if readable_content else 0,
+                   metadata.get('title', 'None')[:50] if metadata.get('title') else 'None',
+                   'present' if soup else 'missing')
+
+        # Store raw HTML content (legacy field) - ALIGNED WITH ASYNC CRAWLER
         if extraction_result.get('content'):
             update_data["content"] = extraction_result['content']
             logger.debug(f"Storing HTML content for {expr_url}: {len(extraction_result['content'])} chars")
@@ -191,63 +233,93 @@ class CrawlerEngine:
             logger.warning(f"No HTML content in extraction_result for {expr_url}")
 
         if readable_content:
-            # Calculate word_count, reading_time and detect language from readable content
+            # Calculer word_count, reading_time et détecter la langue depuis le contenu lisible
             from app.utils.text_utils import analyze_text_metrics
             text_metrics = analyze_text_metrics(readable_content)
             word_count = text_metrics.get('word_count', 0)
-            reading_time = max(1, word_count // 200) if word_count > 0 else None  # 200 words/min
-            detected_lang = text_metrics.get('language')  # Language detected by langdetect
+            reading_time = max(1, word_count // 200) if word_count > 0 else None  # 200 mots/min
+            detected_lang = text_metrics.get('language')  # Langue détectée par langdetect
 
-            # Fallback to HTML lang attribute if detection fails
-            html_lang = extraction_result.get('language')
+            # Fallback vers langue HTML si détection échoue
+            html_lang = metadata.get("lang") or metadata.get("language")
             final_lang = detected_lang or html_lang
 
             # Logging détaillé pour debug
             logger.info(f"Language detection for {expr_url}: detected_lang={detected_lang}, html_lang={html_lang}, final_lang={final_lang}, word_count={word_count}")
 
-            update_data["title"] = extraction_result.get('title', expr_url)
-            update_data["description"] = extraction_result.get('description')
-            update_data["keywords"] = extraction_result.get('keywords')
-            update_data["lang"] = final_lang  # FIXED: Use 'lang' to match SQLAlchemy attribute
-            update_data["readable"] = readable_content
-            update_data["canonical_url"] = extraction_result.get('canonical_url')
-            update_data["word_count"] = word_count
-            update_data["reading_time"] = reading_time
+            # Parse published_at if it's a string (from meta tags)
+            published_at = None
+            if metadata.get("published_at"):
+                try:
+                    from dateutil import parser as date_parser
+                    published_at = date_parser.parse(metadata["published_at"])
+                except Exception:
+                    pass
 
-            # Store extraction source for debugging (optional, can be logged)
-            logger.debug(f"Content extracted via: {extraction_source}")
+            update_data.update(
+                {
+                    "title": metadata.get("title"),
+                    "description": metadata.get("description"),
+                    "keywords": metadata.get("keywords"),
+                    "lang": final_lang,  # FIXED: Use 'lang' to match SQLAlchemy attribute
+                    "readable": readable_content,
+                    "canonical_url": metadata.get("canonical_url"),
+                    "published_at": published_at,
+                    "word_count": word_count,
+                    "reading_time": reading_time,
+                }
+            )
 
-            # 3. Calculate relevance (requires dictionary)
-            land_dict = await text_processing.get_land_dictionary(self.db, expr_land_id)
-            
-            # Create a temporary object with the extracted data for relevance calculation
+            land_dict = text_processing.get_land_dictionary_sync(self.db, expr.land_id)
+
             class TempExpr:
-                def __init__(self, title, readable, expr_id):
+                def __init__(self, title: Optional[str], readable: Optional[str], expr_id: int):
                     self.title = title
                     self.readable = readable
                     self.id = expr_id
-            
-            temp_expr = TempExpr(metadata['title'], readable_content, expr_id)
-            relevance = await text_processing.expression_relevance(
-                land_dict,
-                temp_expr,
-                metadata_lang or 'fr'
-            )
+
+            temp_expr = TempExpr(metadata.get("title"), readable_content, expr.id)
+            try:
+                relevance = asyncio.run(
+                    text_processing.expression_relevance(land_dict, temp_expr, final_lang or "fr")
+                )
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                relevance = loop.run_until_complete(
+                    text_processing.expression_relevance(land_dict, temp_expr, final_lang or "fr")
+                )
+                loop.close()
             update_data["relevance"] = relevance
 
-            # 3.5. Sentiment Analysis (if enabled)
+            # Sentiment Analysis (if enabled)
             if settings.ENABLE_SENTIMENT_ANALYSIS:
                 try:
                     # Determine if we should use LLM (this would come from crawl parameters)
                     # For now, always use TextBlob (default) unless explicitly requested
                     use_llm = False  # TODO: Get from crawl parameters (llm_validation flag)
 
-                    sentiment_data = await self.sentiment_service.enrich_expression_sentiment(
-                        content=update_data.get("content"),
-                        readable=readable_content,
-                        language=final_lang,
-                        use_llm=use_llm
-                    )
+                    # Note: sentiment_service methods are sync-compatible via asyncio.run
+                    try:
+                        sentiment_data = asyncio.run(
+                            self.sentiment_service.enrich_expression_sentiment(
+                                content=update_data.get("content"),
+                                readable=readable_content,
+                                language=final_lang,
+                                use_llm=use_llm
+                            )
+                        )
+                    except RuntimeError:
+                        # Already in event loop
+                        loop = asyncio.new_event_loop()
+                        sentiment_data = loop.run_until_complete(
+                            self.sentiment_service.enrich_expression_sentiment(
+                                content=update_data.get("content"),
+                                readable=readable_content,
+                                language=final_lang,
+                                use_llm=use_llm
+                            )
+                        )
+                        loop.close()
 
                     # Add sentiment data to update
                     update_data["sentiment_score"] = sentiment_data["sentiment_score"]
@@ -258,24 +330,24 @@ class CrawlerEngine:
                     update_data["sentiment_computed_at"] = sentiment_data["sentiment_computed_at"]
 
                     logger.debug(
-                        f"Sentiment enriched for {expr_url}: "
+                        f"[SYNC] Sentiment enriched for {expr_url}: "
                         f"{sentiment_data['sentiment_label']} ({sentiment_data['sentiment_score']}) "
                         f"via {sentiment_data['sentiment_model']}"
                     )
                 except Exception as e:
-                    logger.error(f"Sentiment enrichment failed for {expr_url}: {e}")
+                    logger.error(f"[SYNC] Sentiment enrichment failed for {expr_url}: {e}")
                     # Continue without sentiment (non-blocking)
 
-            # 3.6. Quality Score (if enabled)
+            # Quality Score (if enabled)
             if settings.ENABLE_QUALITY_SCORING:
                 try:
-                    # Get land for quality computation
-                    land = await crud_land.land.get(self.db, id=expr_land_id)
+                    # Get land from DB for quality computation
+                    land = self.db.query(models.Land).filter(models.Land.id == expr.land_id).first()
 
                     if land:
                         # Build temporary expression object for quality computation
-                        class TempExpr:
-                            def __init__(self, data):
+                        class TempExprQuality:
+                            def __init__(self, data, existing_expr):
                                 # Copy all fields from update_data
                                 for key, value in data.items():
                                     setattr(self, key, value)
@@ -291,389 +363,354 @@ class CrawlerEngine:
                                 self.reading_time = data.get("reading_time")
                                 self.language = data.get("lang")  # Note: update_data uses 'lang', model uses 'language'
                                 self.relevance = data.get("relevance")
-                                self.validllm = getattr(expr, 'validllm', None)  # From existing expr
+                                self.validllm = getattr(existing_expr, 'validllm', None)  # From existing expr
                                 self.readable = data.get("readable")
-                                self.readable_at = getattr(expr, 'readable_at', None)
+                                self.readable_at = getattr(existing_expr, 'readable_at', None)
                                 self.crawled_at = data.get("crawled_at")
 
-                        temp_expr = TempExpr(update_data)
+                        temp_expr_quality = TempExprQuality(update_data, expr)
 
                         quality_result = self.quality_scorer.compute_quality_score(
-                            expression=temp_expr,
+                            expression=temp_expr_quality,
                             land=land
                         )
 
                         update_data["quality_score"] = quality_result["score"]
 
                         logger.debug(
-                            f"Quality computed for {expr_url}: "
+                            f"[SYNC] Quality computed for {expr_url}: "
                             f"{quality_result['score']:.2f} ({quality_result['category']})"
                         )
                     else:
-                        logger.warning(f"Could not compute quality: land {expr_land_id} not found")
+                        logger.warning(f"[SYNC] Could not compute quality: land {expr.land_id} not found")
 
                 except Exception as e:
-                    logger.error(f"Quality scoring failed for {expr_url}: {e}")
+                    logger.error(f"[SYNC] Quality scoring failed for {expr_url}: {e}")
                     # Continue without quality (non-blocking)
 
-            # 4. approved_at is set whenever readable content is saved
+            # approved_at is set whenever readable content is saved
             update_data["approved_at"] = datetime.utcnow()
-            logger.debug(f"Expression {expr_id} processed with relevance {relevance}")
 
-            # 5. Extract links and media with error handling
-            # Skip link/media extraction in test environment to avoid CRUD method issues
-            import os
-            if not os.getenv('PYTEST_CURRENT_TEST'):
-                try:
-                    # Use markdown links if available (legacy behavior)
-                    if links:
-                        await self._create_links_from_markdown(links, expr, expr_url, expr_land_id, expr_depth)
-                    else:
-                        # Fallback to HTML parsing if markdown extraction failed
-                        if extraction_result.get('soup'):
-                            await self._extract_and_save_links(extraction_result['soup'], expr, expr_url, expr_land_id, expr_depth)
-                except Exception as e:
-                    logger.warning(f"Error extracting links for {expr_url}: {e}")
+            self._handle_links_and_media(
+                soup=soup,
+                expr=expr,
+                expr_url=expr_url,
+                analyze_media=analyze_media,
+            )
 
-                try:
-                    # Save media from enriched markdown (legacy behavior)
-                    if media_list:
-                        await self._save_media_from_list(media_list, expr_id)
+        for field, value in update_data.items():
+            setattr(expr, field, value)
 
-                    # Also extract dynamic media if requested
-                    if analyze_media and extraction_result.get('soup'):
-                        await self._extract_and_save_media(extraction_result['soup'], expr, expr_url, expr_id, analyze_media)
-                except Exception as e:
-                    logger.warning(f"Error extracting media for {expr_url}: {e}")
-            else:
-                print("Test environment detected, skipping link and media extraction")
-
-        # 6. Save to DB
-        expression_update = ExpressionUpdate(**update_data)
-        await crud_expression.expression.update_expression(self.db, db_obj=expr, obj_in=expression_update)
-        logger.info(f"Successfully crawled {expr_url}")
-
-        # Return HTTP status code for statistics
+        self.db.add(expr)
         return http_status_code
 
-    async def _create_links_from_markdown(self, links: list, expr: models.Expression, expr_url: str, expr_land_id: int, expr_depth: Optional[int]):
-        """
-        Create expression links from markdown-extracted URLs (legacy behavior).
-        This reproduces the logic from _legacy/core.py:1787.
-        """
-        from urllib.parse import urljoin, urlparse
-        from app.crud import crud_domain, crud_expression, crud_link
+    def close(self) -> None:
+        """Close HTTP resources."""
+        try:
+            self.http_client.close()
+        except Exception:
+            pass
 
-        links_created = 0
+    # ------------------------------------------------------------------ #
+    # Internal helpers                                                   #
+    # ------------------------------------------------------------------ #
+    def _get_or_create_domain(self, name: str, land_id: int) -> models.Domain:
+        domain = (
+            self.db.query(models.Domain)
+            .filter(
+                models.Domain.name == name,
+                models.Domain.land_id == land_id,
+            )
+            .first()
+        )
+        if domain:
+            return domain
 
-        for link_url in links:
+        domain = models.Domain(name=name, land_id=land_id)
+        self.db.add(domain)
+        self.db.commit()
+        self.db.refresh(domain)
+        return domain
+
+    def _get_or_create_expression(self, land_id: int, url: str, depth: int) -> models.Expression:
+        url_hash = models.Expression.compute_url_hash(url)
+        expression = (
+            self.db.query(models.Expression)
+            .filter(
+                models.Expression.land_id == land_id,
+                models.Expression.url_hash == url_hash,
+                models.Expression.url == url,
+            )
+            .first()
+        )
+        if expression:
+            return expression
+
+        domain_name = urlparse(url).netloc
+        domain = self._get_or_create_domain(domain_name, land_id)
+
+        expression = models.Expression(
+            url=url,
+            url_hash=url_hash,
+            land_id=land_id,
+            domain_id=domain.id,
+            depth=depth,
+        )
+        self.db.add(expression)
+        self.db.flush()
+        self.db.refresh(expression)
+        return expression
+
+    def _get_expressions_to_crawl_query(
+        self,
+        land_id: int,
+        limit: int = 0,
+        http_status: Optional[str] = None,
+        depth: Optional[int] = None,
+    ):
+        """
+        CRITÈRE: approved_at IS NULL = expressions jamais traitées par le crawler
+        (pas crawled_at qui indique seulement le fetch HTTP)
+        """
+        query = (
+            self.db.query(models.Expression)
+            .filter(models.Expression.land_id == land_id)
+            .filter(models.Expression.approved_at.is_(None))
+            .order_by(models.Expression.depth.asc(), models.Expression.created_at.asc())
+        )
+
+        if http_status is not None:
             try:
-                # Resolve relative URLs
-                full_url = urljoin(expr_url, link_url)
-                parsed = urlparse(full_url)
+                http_value = int(http_status)
+                query = query.filter(models.Expression.http_status == http_value)
+            except (TypeError, ValueError):
+                pass
 
-                # Validate URL structure
-                if not parsed.scheme in ['http', 'https'] or not parsed.netloc:
-                    continue
+        if depth is not None:
+            query = query.filter(models.Expression.depth == depth)
 
-                # Clean URL (remove fragments and tracking params)
-                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                if parsed.query:
-                    tracking_params = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
-                                     'fbclid', 'gclid', 'ref', 'source', 'campaign'}
-                    query_params = []
-                    for param in parsed.query.split('&'):
-                        if '=' in param:
-                            key = param.split('=')[0].lower()
-                            if key not in tracking_params:
-                                query_params.append(param)
-                    if query_params:
-                        clean_url += '?' + '&'.join(query_params)
+        if limit and limit > 0:
+            query = query.limit(limit)
 
-                # Get or create domain
-                domain_name = parsed.netloc.lower()
-                domain = await crud_domain.domain.get_or_create(
-                    self.db, name=domain_name, land_id=expr_land_id
-                )
+        return query
 
-                # Check if expression already exists
-                existing_expr = await crud_expression.expression.get_by_url_and_land(
-                    self.db, url=clean_url, land_id=expr_land_id
-                )
+    def _fetch_expressions_to_crawl(
+        self,
+        land_id: int,
+        limit: int = 0,
+        depth: Optional[int] = None,
+        http_status: Optional[str] = None,
+    ) -> List[models.Expression]:
+        return list(
+            self._get_expressions_to_crawl_query(
+                land_id=land_id,
+                limit=limit,
+                depth=depth,
+                http_status=http_status,
+            ).all()
+        )
 
-                if not existing_expr:
-                    # Create new expression for discovered link
-                    depth = expr_depth + 1 if expr_depth is not None else 1
-                    new_expr = await crud_expression.expression.get_or_create_expression(
-                        self.db,
-                        land_id=expr_land_id,
-                        url=clean_url,
-                        depth=depth
-                    )
-                    target_expr = new_expr
-                else:
-                    target_expr = existing_expr
+    def _handle_links_and_media(
+        self,
+        soup,
+        expr: models.Expression,
+        expr_url: str,
+        analyze_media: bool,
+    ) -> None:
+        import os
 
-                # Create ExpressionLink relationship
-                if target_expr and target_expr.id != expr.id:
-                    link_type = "internal" if parsed.netloc == urlparse(expr_url).netloc else "external"
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            logger.debug("Test environment detected, skipping link/media extraction")
+            return
 
-                    await crud_link.expression_link.create_link(
-                        self.db,
-                        source_id=expr.id,
-                        target_id=target_expr.id,
-                        anchor_text="",  # Not available from markdown
-                        link_type=link_type,
-                        rel_attribute=None
-                    )
-                    links_created += 1
+        try:
+            self._extract_and_save_links(soup, expr, expr_url)
+        except Exception as exc:  # noqa: BLE001
+            self.db.rollback()
+            logger.warning("Error extracting links for %s: %s", expr_url, exc)
 
-            except Exception as e:
-                logger.warning(f"Error processing markdown link {link_url}: {e}")
+        try:
+            self._extract_and_save_media(soup, expr, expr_url, analyze_media)
+        except Exception as exc:  # noqa: BLE001
+            self.db.rollback()
+            logger.warning("Error extracting media for %s: %s", expr_url, exc)
+
+    def _extract_and_save_links(self, soup, expr: models.Expression, expr_url: str) -> List[Dict[str, str]]:
+        from app.db.models import ExpressionLink
+
+        links_found: List[Dict[str, str]] = []
+
+        for link in soup.find_all("a", href=True):
+            href = link["href"].strip()
+            if not href or href.startswith("#") or href.startswith(("javascript:", "mailto:", "tel:")):
                 continue
 
-        if links_created > 0:
-            logger.info(f"Created {links_created} links from markdown for {expr_url}")
-
-    async def _save_media_from_list(self, media_list: list, expr_id: int):
-        """
-        Save media from the enriched markdown media list (legacy behavior).
-        This reproduces the logic from _legacy/core.py:1780-1786.
-        """
-        from app.crud import crud_media
-
-        for media_item in media_list:
-            try:
-                media_url = media_item.get('url')
-                media_type_str = media_item.get('type', 'img')
-
-                # Skip data URLs
-                if not media_url or media_url.startswith('data:'):
-                    continue
-
-                # Check if media already exists
-                existing_media = await crud_media.media.media_exists(
-                    self.db, expression_id=expr_id, url=media_url
-                )
-
-                if not existing_media:
-                    # Map type string to MediaType enum
-                    if media_type_str == 'img':
-                        media_type = models.MediaType.IMAGE
-                    elif media_type_str == 'video':
-                        media_type = models.MediaType.VIDEO
-                    elif media_type_str == 'audio':
-                        media_type = models.MediaType.AUDIO
-                    else:
-                        media_type = models.MediaType.IMAGE  # Default
-
-                    media_data = {
-                        'url': media_url,
-                        'type': media_type,
-                        'is_processed': False
-                    }
-
-                    await crud_media.media.create_media(
-                        self.db, expression_id=expr_id, media_data=media_data
-                    )
-                    logger.debug(f"Saved media from markdown: {media_url}")
-
-            except Exception as e:
-                logger.warning(f"Error saving media {media_item}: {e}")
-                continue
-
-    async def _extract_and_save_links(self, soup, expr: models.Expression, expr_url: str, expr_land_id: int, expr_depth: Optional[int]):
-        """Extracts and saves links from a crawled page with advanced validation."""
-        from urllib.parse import urljoin, urlparse
-        from app.crud import crud_domain, crud_expression, crud_link
-        import re
-        
-        links_found = []
-        
-        # Extract all links with href attributes
-        for link in soup.find_all('a', href=True):
-            href = link['href'].strip()
-            
-            # Skip empty, fragment-only, or javascript links
-            if not href or href.startswith('#') or href.startswith('javascript:') or href.startswith('mailto:') or href.startswith('tel:'):
-                continue
-                
-            # Resolve relative URLs to absolute
             try:
                 full_url = urljoin(expr_url, href)
                 parsed = urlparse(full_url)
-                
-                # Validate URL structure
-                if not parsed.scheme in ['http', 'https'] or not parsed.netloc:
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                     continue
-                    
-                # Remove common tracking parameters and fragments
+
                 clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
                 if parsed.query:
-                    # Keep only meaningful query parameters, filter out tracking
-                    tracking_params = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 
-                                     'fbclid', 'gclid', 'ref', 'source', 'campaign'}
-                    query_params = []
-                    for param in parsed.query.split('&'):
-                        if '=' in param:
-                            key = param.split('=')[0].lower()
-                            if key not in tracking_params:
-                                query_params.append(param)
-                    if query_params:
-                        clean_url += '?' + '&'.join(query_params)
-                
-                # Get or create domain for this link
-                domain_name = parsed.netloc.lower()
-                domain = await crud_domain.domain.get_or_create(
-                    self.db, name=domain_name, land_id=expr_land_id
-                )
-                
-                # Check if expression already exists
-                existing_expr = await crud_expression.expression.get_by_url_and_land(self.db, url=clean_url, land_id=expr_land_id)
-                
-                # Extract link text for context
-                link_text = link.get_text(strip=True)[:200] or "No text"
-                
-                if not existing_expr:
-                    # Create new expression for discovered link
-                    depth = expr_depth + 1 if expr_depth is not None else 1
-                    new_expr = await crud_expression.expression.get_or_create_expression(
-                        self.db, 
-                        land_id=expr_land_id, 
-                        url=clean_url, 
-                        depth=depth
-                    )
-                    target_expr = new_expr
-                    
-                    links_found.append({
-                        'url': clean_url,
-                        'text': link_text,
-                        'domain': domain_name,
-                        'depth': depth
-                    })
-                else:
-                    target_expr = existing_expr
-                
-                # Create ExpressionLink relationship regardless of whether target exists
-                if target_expr and target_expr.id != expr.id:  # Avoid self-links
-                    # Determine link type (internal vs external)
-                    link_type = "internal" if parsed.netloc == urlparse(expr_url).netloc else "external"
-                    
-                    rel_attr = link.get('rel')
-                    if isinstance(rel_attr, (list, tuple)):
-                        rel_attr = " ".join(str(item) for item in rel_attr if item)
-                    elif rel_attr is not None:
-                        rel_attr = str(rel_attr)
+                    tracking_params = {
+                        "utm_source",
+                        "utm_medium",
+                        "utm_campaign",
+                        "utm_content",
+                        "utm_term",
+                        "fbclid",
+                        "gclid",
+                        "ref",
+                        "source",
+                        "campaign",
+                    }
+                    kept_params = []
+                    for part in parsed.query.split("&"):
+                        if "=" not in part:
+                            continue
+                        key = part.split("=", 1)[0].lower()
+                        if key not in tracking_params:
+                            kept_params.append(part)
+                    if kept_params:
+                        clean_url = f"{clean_url}?{'&'.join(kept_params)}"
 
-                    await crud_link.expression_link.create_link(
-                        self.db, 
-                        source_id=expr.id, 
+                domain = self._get_or_create_domain(parsed.netloc.lower(), expr.land_id)
+
+                target_expr = (
+                    self.db.query(models.Expression)
+                    .filter(
+                        models.Expression.land_id == expr.land_id,
+                        models.Expression.url_hash == models.Expression.compute_url_hash(clean_url),
+                        models.Expression.url == clean_url,
+                    )
+                    .first()
+                )
+
+                link_text = link.get_text(strip=True)[:200] or "No text"
+
+                if not target_expr:
+                    depth = (expr.depth or 0) + 1
+                    target_expr = self._get_or_create_expression(expr.land_id, clean_url, depth)
+
+                    links_found.append(
+                        {
+                            "url": clean_url,
+                            "text": link_text,
+                            "domain": domain.name,
+                            "depth": target_expr.depth or depth,
+                        }
+                    )
+
+                if target_expr.id == expr.id:
+                    continue
+
+                link_type = "internal" if parsed.netloc == urlparse(expr_url).netloc else "external"
+                rel_attr = link.get("rel")
+                if isinstance(rel_attr, (list, tuple)):
+                    rel_attr = " ".join(str(item) for item in rel_attr if item)
+
+                relationship_exists = (
+                    self.db.query(models.ExpressionLink)
+                    .filter(
+                        models.ExpressionLink.source_id == expr.id,
+                        models.ExpressionLink.target_id == target_expr.id,
+                    )
+                    .first()
+                    is not None
+                )
+
+                if not relationship_exists:
+                    link_obj = ExpressionLink(
+                        source_id=expr.id,
                         target_id=target_expr.id,
                         anchor_text=link_text,
                         link_type=link_type,
-                        rel_attribute=rel_attr
+                        rel_attribute=rel_attr,
                     )
-                    
-            except Exception as e:
-                await self.db.rollback()
-                logger.warning(f"Error processing link {href}: {e}")
-                continue
-        
+                    self.db.add(link_obj)
+                    self.db.commit()
+
+            except Exception as exc:  # noqa: BLE001
+                self.db.rollback()
+                logger.warning("Error processing link %s: %s", href, exc)
+
         if links_found:
-            logger.info(f"Discovered {len(links_found)} new links from {expr_url}")
-        
+            logger.info("Discovered %s new links from %s", len(links_found), expr_url)
+
         return links_found
 
-    async def _extract_and_save_media(self, soup, expr: models.Expression, expr_url: str, expr_id: int, analyze_media: bool):
-        """Extracts and saves media from a crawled page with full analysis."""
-        from urllib.parse import urljoin
-        from app.core.media_processor import MediaProcessor
-        from app.crud import crud_media
-        
-        # Initialize media processor
-        media_processor = MediaProcessor(self.db, self.http_client)
-        
-        # Extract static media from HTML
+    def _extract_and_save_media(
+        self,
+        soup,
+        expr: models.Expression,
+        expr_url: str,
+        analyze_media: bool,
+    ) -> None:
+        media_processor = MediaProcessorSync(self.db, self.http_client)
         media_urls = media_processor.extract_media_urls(soup, expr_url)
-        
-        # Process each media URL
+
         for media_url in media_urls:
             try:
-                # Check if media already exists
-                existing_media = await crud_media.media.media_exists(
-                    self.db, expression_id=expr_id, url=media_url
-                )
-                
-                if not existing_media:
-                    if media_url.startswith('data:'):
-                        logger.debug("Skipping inline data media for expression %s", expr_id)
-                        continue
-                    # Determine media type
-                    media_type = self._determine_media_type(media_url)
-                    
-                    # Create basic media record
-                    media_data = {
-                        'url': media_url,
-                        'type': media_type,
-                    }
-                    
-                    # For images, perform detailed analysis
-                    if analyze_media and media_type == models.MediaType.IMAGE:
-                        analysis = await media_processor.analyze_image(media_url)
-                        if not analysis.get('error'):
-                            media_data.update({
-                                'width': analysis.get('width'),
-                                'height': analysis.get('height'),
-                                'file_size': analysis.get('file_size'),
-                                'format': analysis.get('format'),
-                                'has_transparency': analysis.get('has_transparency'),
-                                'aspect_ratio': analysis.get('aspect_ratio'),
-                                'dominant_colors': analysis.get('dominant_colors'),
-                                'websafe_colors': analysis.get('websafe_colors'),
-                                'image_hash': analysis.get('image_hash'),
-                                'exif_data': analysis.get('exif_data'),
-                                'color_mode': analysis.get('color_mode'),
-                                'mime_type': analysis.get('mime_type'),
-                                'processed_at': datetime.now(timezone.utc),
-                                'is_processed': True,
-                                'analysis_error': None,
-                                'processing_error': None,
-                            })
-                        else:
-                            media_data['analysis_error'] = analysis['error']
+                if media_url.startswith("data:"):
+                    continue
+
+                if media_processor.media_exists(expr.id, media_url):
+                    continue
+
+                media_type = self._determine_media_type(media_url)
+                media_payload: Dict[str, Any] = {"url": media_url, "type": media_type}
+
+                if analyze_media and media_type == models.MediaType.IMAGE:
+                    analysis = media_processor.analyze_image(media_url)
+                    if not analysis.get("error"):
+                        media_payload.update(
+                            {
+                                "width": analysis.get("width"),
+                                "height": analysis.get("height"),
+                                "file_size": analysis.get("file_size"),
+                                "format": analysis.get("format"),
+                                "has_transparency": analysis.get("has_transparency"),
+                                "aspect_ratio": analysis.get("aspect_ratio"),
+                                "dominant_colors": analysis.get("dominant_colors"),
+                                "websafe_colors": analysis.get("websafe_colors"),
+                                "image_hash": analysis.get("image_hash"),
+                                "exif_data": analysis.get("exif_data"),
+                                "color_mode": analysis.get("color_mode"),
+                                "mime_type": analysis.get("mime_type"),
+                                "processed_at": datetime.now(timezone.utc),
+                                "is_processed": True,
+                                "analysis_error": None,
+                                "processing_error": None,
+                            }
+                        )
                     else:
-                        media_data.setdefault('is_processed', False)
-                    
-                    # Save media record
-                    await crud_media.media.create_media(self.db, expression_id=expr_id, media_data=media_data)
-                    log_message = "Analyzed and saved %s: %s" if (analyze_media and media_type == models.MediaType.IMAGE) else "Saved %s (analysis skipped): %s"
-                    logger.debug(log_message, media_type.name.lower(), media_url)
-                    
-            except Exception as e:
-                logger.warning(f"Error processing media {media_url}: {e}")
-                await self.db.rollback()
-                continue
-        
-        # Extract dynamic media using Playwright (disabled in tests)
+                        media_payload["analysis_error"] = analysis["error"]
+                else:
+                    media_payload.setdefault("is_processed", False)
+
+                media_processor.create_media(expr.id, media_payload)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error processing media %s: %s", media_url, exc)
+                self.db.rollback()
+
         try:
-            await media_processor.extract_dynamic_medias(expr_url, expr)
-        except Exception as e:
-            logger.warning(f"Error during dynamic media extraction for {expr_url}: {e}")
-    
-    def _determine_media_type(self, url: str) -> models.MediaType:
-        """Determine media type based on URL extension."""
+            media_processor.extract_dynamic_medias(expr_url, expr)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error during dynamic media extraction for %s: %s", expr_url, exc)
+
+    @staticmethod
+    def _determine_media_type(url: str) -> models.MediaType:
         url_lower = url.lower()
-        
-        image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.tiff', '.ico')
-        video_extensions = ('.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v')
-        audio_extensions = ('.mp3', '.wav', '.ogg', '.aac', '.flac', '.m4a', '.wma')
-        
-        if any(url_lower.endswith(ext) for ext in image_extensions):
+
+        image_ext = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.tiff', '.ico')
+        video_ext = ('.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v')
+        audio_ext = ('.mp3', '.wav', '.ogg', '.aac', '.flac', '.m4a', '.wma')
+
+        if url_lower.endswith(image_ext):
             return models.MediaType.IMAGE
-        elif any(url_lower.endswith(ext) for ext in video_extensions):
+        if url_lower.endswith(video_ext):
             return models.MediaType.VIDEO
-        elif any(url_lower.endswith(ext) for ext in audio_extensions):
+        if url_lower.endswith(audio_ext):
             return models.MediaType.AUDIO
-        else:
-            # Default to IMAGE for unknown types (many images don't have clear extensions)
-            return models.MediaType.IMAGE
+        return models.MediaType.IMAGE

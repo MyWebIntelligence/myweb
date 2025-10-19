@@ -30,7 +30,7 @@ class ExpressionUpdate(BaseModel):
     content: Optional[str] = None  # HTML brut (legacy field)
     readable: Optional[str] = None
     relevance: Optional[float] = None
-    http_status: Optional[str] = None  # Changed to string (legacy format)
+    http_status: Optional[int] = None  # Must match DB type (INTEGER)
     lang: Optional[str] = None
     language: Optional[str] = None  # Alias for lang
     crawled_at: Optional[datetime] = None

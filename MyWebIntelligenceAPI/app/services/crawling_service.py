@@ -12,12 +12,9 @@ from app.schemas.job import (
 )
 from app.core.celery_app import celery_app
 from fastapi import HTTPException, status
-from app.core.websocket import WebSocketManager
 import logging
 
 logger = logging.getLogger(__name__)
-
-websocket_manager = WebSocketManager()
 
 async def start_crawl_for_land(db: AsyncSession, land_id: int, crawl_request: CrawlRequest) -> CrawlJobResponse:
     """
@@ -71,11 +68,13 @@ async def start_crawl_for_land(db: AsyncSession, land_id: int, crawl_request: Cr
         if job_id is None:
             raise ValueError("Job ID could not be retrieved after creation")
 
-        # Dispatch task with WebSocket channel
+        # Use Celery (sync crawler only in V2)
+        logger.info(f"Using CELERY (sync crawler) for land {land_id}")
+
+        # Dispatch task to Celery worker
         task = celery_app.send_task(
             "tasks.crawl_land_task",
-            args=[job_id],
-            kwargs={"ws_channel": f"crawl_progress_{job_id}"}
+            args=[job_id]
         )
 
         # Update job with Celery task ID

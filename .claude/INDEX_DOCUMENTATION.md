@@ -1,13 +1,13 @@
 # 📚 Index de la Documentation - Transfert Legacy → API
 
-**Date**: 18 octobre 2025 (revue)
+**Date**: 19 octobre 2025 (revue)
 **Projet**: MyWebIntelligence - Migration Pipeline Crawl & Readable
 
 ---
 
 ## 🗺️ Vue d'ensemble
 
-Ce dossier `.claude/` contient toute la documentation relative au transfert et à l'alignement du système legacy vers l'API moderne. Suite à l'audit du 17 octobre 2025, **des corrections majeures** ont été apportées pour restaurer la parité avec le système legacy.  
+Ce dossier `.claude/` contient toute la documentation relative au transfert et à l'alignement du système legacy vers l'API moderne. Suite à l'audit du 17 octobre 2025, **des corrections majeures** ont été apportées pour restaurer la parité avec le système legacy.
 Les rapports de tests ponctuels datés du 13 octobre ont été archivés afin de ne conserver ici que les sources de vérité actives.
 
 ---
@@ -31,25 +31,14 @@ Bug le plus fréquent du projet:
 
 ### 🎯 Piliers du transfert (à lire en priorité)
 
-1. [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md) — vision produit et plan d'actions validées ✅
-2. [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md) — audit complet + cartographie Legacy → API
-3. [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md) — détails techniques (métadonnées & HTML)
-4. [Transfert_readable.md](Transfert_readable.md) — état d'avancement du pipeline readable
-5. [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md) — schéma des fallbacks d'extraction
-
-### 🔬 Analyses ciblées
-
-- [compare_addterms_analysis.md](compare_addterms_analysis.md) — état des lieux AddTerms, lemmatisation et pertinence
-
-### 📌 Focus métadonnées
-
-- [METADATA_FIXES.md](METADATA_FIXES.md) — dossier détaillé des corrections metadata (17 oct)
-- [CORRECTIONS_FINALES.md](CORRECTIONS_FINALES.md) — synthèse de clôture + plan de tests
+1. [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md) — audit complet + cartographie Legacy → API
+2. [Transfert_readable.md](Transfert_readable.md) — état d'avancement du pipeline readable
+3. [docs/CHAÎNE_FALLBACKS.md](docs/CHAÎNE_FALLBACKS.md) — schéma des fallbacks d'extraction
 
 ### 🧭 Playbooks & opérations
 
 - [AGENTS.md](AGENTS.md) — checklists critiques (double crawler, init DB, dictionnaire)
-- [GEMINI.md](GEMINI.md) — démarrage rapide & workflows API (vue opérateur)
+- [../.gemini/GEMINI.md](../.gemini/GEMINI.md) — démarrage rapide & workflows API (vue opérateur)
 
 ### 🧱 Références architecture
 
@@ -61,25 +50,21 @@ Bug le plus fréquent du projet:
 ## 🎯 Workflow de Lecture Recommandé
 
 ### Pour comprendre rapidement (15 min)
-1. [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md)
-2. [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md) (schéma visuel)
+1. [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md)
+2. [docs/CHAÎNE_FALLBACKS.md](docs/CHAÎNE_FALLBACKS.md) (schéma visuel)
 
 ### Pour une compréhension complète (1h)
-1. [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md)
-2. [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md)
-3. [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md)
-4. [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md)
+1. [TRANSFERT_API_CRAWL.md](TRANSFERT_API_CRAWL.md)
+2. [docs/CHAÎNE_FALLBACKS.md](docs/CHAÎNE_FALLBACKS.md)
 
 ### Pour l'implémentation (développeur)
-1. [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md)
-2. [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md)
-3. Code source dans `MyWebIntelligenceAPI/app/core/`
-4. Tests dans `MyWebIntelligenceAPI/tests/test_legacy_parity.py`
+1. [docs/CHAÎNE_FALLBACKS.md](docs/CHAÎNE_FALLBACKS.md)
+2. Code source dans `MyWebIntelligenceAPI/app/core/`
+3. Tests dans `MyWebIntelligenceAPI/tests/test_legacy_parity.py`
 
 ### Pour la validation (QA/Tests)
-1. [RÉSUMÉ_CORRECTIONS_17OCT2025.md](RÉSUMÉ_CORRECTIONS_17OCT2025.md) (section Tests)
-2. [Transfert_readable.md](Transfert_readable.md) (checklist validation)
-3. `MyWebIntelligenceAPI/tests/test_legacy_parity.py`
+1. [Transfert_readable.md](Transfert_readable.md) (checklist validation)
+2. `MyWebIntelligenceAPI/tests/test_legacy_parity.py`
 
 ---
 
@@ -106,17 +91,12 @@ Bug le plus fréquent du projet:
 ```
 .claude/
 ├── AGENTS.md                       🔁 Playbook Claude/Codex
-├── GEMINI.md                       🔁 Playbook Gemini
 ├── Architecture.md                 🧱 Cartographie code
 ├── INDEX_DOCUMENTATION.md          ← Vous êtes ici
-├── RÉSUMÉ_CORRECTIONS_17OCT2025.md ⭐ Start here
 ├── TRANSFERT_API_CRAWL.md          📋 Audit complet
-├── CORRECTIONS_PARITÉ_LEGACY.md    🔧 Détails techniques
-├── CHAÎNE_FALLBACKS.md             📊 Schéma pipeline
 ├── Transfert_readable.md           📝 Audit readable
-├── METADATA_FIXES.md               🪪 Dossier métadonnées
-├── CORRECTIONS_FINALES.md          ✅ Synthèse métadonnées
-└── compare_addterms_analysis.md    🔬 Analyse AddTerms
+└── docs/
+    └── CHAÎNE_FALLBACKS.md         📊 Schéma pipeline
 ```
 
 ---
@@ -208,12 +188,8 @@ curl -X POST http://localhost:8000/api/lands/{land_id}/crawl
 
 ## 📞 Support
 
-### Questions sur les Corrections
-- Consulter [CORRECTIONS_PARITÉ_LEGACY.md](CORRECTIONS_PARITÉ_LEGACY.md)
-- Section "Points d'attention" et "Impacts métier"
-
 ### Questions sur la Pipeline
-- Consulter [CHAÎNE_FALLBACKS.md](CHAÎNE_FALLBACKS.md)
+- Consulter [docs/CHAÎNE_FALLBACKS.md](docs/CHAÎNE_FALLBACKS.md)
 - Schéma visuel et détails des méthodes
 
 ### Questions sur l'Audit
@@ -232,6 +208,6 @@ curl -X POST http://localhost:8000/api/lands/{land_id}/crawl
 
 ---
 
-**Dernière mise à jour**: 18 octobre 2025
-**Version**: 1.1
+**Dernière mise à jour**: 19 octobre 2025
+**Version**: 1.2
 **Mainteneur**: Équipe MyWebIntelligence
