@@ -10,24 +10,24 @@ Les chemins entre parenthèses renvoient à l’implémentation dans `MyWebIntel
 ### 1.1 Couches principales
 1. **Entrée HTTP** – FastAPI (`api/router.py`) expose les routeurs v1/v2 (`api/v1`, `api/v2`). Chaque endpoint valide la requête via Pydantic, contrôle les permissions, puis délègue à un service de domaine.
 2. **Services d’orchestration** – Modules `app/services/*` encapsulent les règles métier (sélection d’expressions, déclenchement de tâches Celery, appels externes, mises à jour SQLAlchemy).
-3. **Tâches asynchrones** – `app/tasks/*` exécutent les workloads lourds (crawl, readable, media, exports, embeddings). Les tâches mettent à jour `crawl_jobs`/`jobs` et publient la progression (WS + logs).
+3. **Tâches Celery** – `app/tasks/*` exécutent les workloads lourds (crawl, readable, media, exports, embeddings). Les tâches mettent à jour `crawl_jobs`/`jobs` et publient la progression (WS + logs).
 4. **Moteurs de traitement** – `app/core/*` fournit les moteurs spécialisés : crawler, extracteur Trafilatura, media processor, embedding providers, etc.
-5. **Accès aux données** – `app/crud/*` et `app/db/*` gèrent l’accès PostgreSQL avec SQLAlchemy (async/sync) et persistance des entités.
+5. **Accès aux données** – `app/crud/*` et `app/db/*` pilotent PostgreSQL via les sessions synchrones définies dans `app/db/session.py`.
 6. **Observabilité** – Logs structurés (`utils/logging.py`), WebSockets (`core/websocket.py`), tables `crawl_jobs`, exports physiques et métriques (Prometheus/Grafana côté ops).
 
 ### 1.2 Lifecycle générique d’une requête v2
 1. **Client** appelle `POST /api/v2/lands/{id}/<pipeline>`.
 2. **Endpoint** (ex. `api/v2/endpoints/lands_v2.py`) vérifie l’utilisateur, sérialise la payload, enregistre un `crawl_job` via `crud_job`.
 3. **Service** (ex. `services/crawling_service.py`) prépare les paramètres, envoie une tâche Celery et renvoie `job_id`, `ws_channel`.
-4. **Tâche Celery** (ex. `tasks/crawling_task.py`) ouvre une session DB (`db/base.AsyncSessionLocal`), récupère les expressions, lance le moteur (`core/crawler_engine_sync.py`), met à jour la base, publie la progression.
+4. **Tâche Celery** (ex. `tasks/crawling_task.py`) ouvre une session DB (`db/session.SessionLocal`), récupère les expressions, lance le moteur (`core/crawler_engine.py`), met à jour la base, publie la progression.
 5. **Client** suit le job (WebSocket `core/websocket.py` ou `GET /api/v2/jobs/{id}`) et récupère les résultats (`exports`, statistiques, champs enrichis).
 
 ### 1.3 Pipelines majeurs
 
 | Pipeline | Endpoint principal | Service / Tâche | Core utilisé | Effets |
 |----------|-------------------|-----------------|--------------|--------|
-| **Crawl** | `POST /lands/{id}/crawl` (`v1`, `v2`) | `services/crawling_service.py` → `tasks/crawling_task.py` | `core/crawler_engine.py` (async) & `core/crawler_engine_sync.py` | Crée/actualise `expressions`, `media`, `links`, calcule relevance/sentiment/quality, met `approved_at` |
-| **Readable** | `POST /lands/{id}/readable` | `services/readable_service.py` (async) ou `readable_simple_service.py` via `tasks/readable_task.py` | `core/content_extractor.py`, `core/readable_db.py` | Génère markdown lisible, met à jour metadata, peut valider LLM, recalculer relevance |
+| **Crawl** | `POST /lands/{id}/crawl` (`v1`, `v2`) | `services/crawling_service.py` → `tasks/crawling_task.py` | `core/crawler_engine.py` | Crée/actualise `expressions`, `media`, `links`, calcule relevance/sentiment/quality, met `approved_at` |
+| **Readable** | `POST /lands/{id}/readable` | `services/readable_service.py` ou `readable_simple_service.py` via `tasks/readable_task.py` | `core/content_extractor.py`, `core/readable_db.py` | Génère markdown lisible, met à jour metadata, peut valider LLM, recalculer relevance |
 | **Media Analyse** | `POST /lands/{id}/medianalyse` | `tasks/media_analysis_task.py` | `core/media_processor.py` | Télécharge et enrichit chaque média (dimensions, EXIF, couleur, hash), marque `media.is_processed` |
 | **Embeddings / Paragraphes** | `POST /lands/{id}/embeddings` (v1) | `services/embedding_service.py` → `tasks/embedding_tasks.py` | `core/embedding_providers/*` | Génère paragraphes et embeddings, remplit `Paragraph`, `ParagraphEmbedding`, `ParagraphSimilarity` |
 | **Exports** | `POST /lands/{id}/export` (`v1`, `v2`) | `services/export_service.py` / `_sync.py` → `tasks/export_task.py` | `services/export_service*` (SQL + CSV/GEXF writer) | Produit les fichiers sous `exports/`, expose colonnes seorank/media/readable |
@@ -76,13 +76,13 @@ La structure complète (colonnes, index, contraintes) est disponible dans `app/d
   - Monte le code (`./MyWebIntelligenceAPI:/app`) pour hot-reload en dev.
   - Charge `.env` du projet (`MyWebIntelligenceAPI/.env`).
   - Dépend de `db` (healthy) et `redis`.
-  - Variables d’environnement : `DATABASE_URL` (asyncpg), `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `CELERY_AUTOSCALE`.
+  - Variables d’environnement : `DATABASE_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `CELERY_AUTOSCALE`.
   - Commande : `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
   - Port mappé `8000:8000`.
 - **celery_worker** – Worker identique (même image, code monté, env identique) exécutant `celery -A app.core.celery_app worker`.
 
 ### 3.2 Cycle de vie
-1. `mywebintelligenceapi` démarre FastAPI (`app/main.py`). L’instance configure la base async, charge les routes v1/v2 et enregistre les tasks Celery (via `core/celery_app.py`).
+1. `mywebintelligenceapi` démarre FastAPI (`app/main.py`). L’instance prépare les sessions synchrones, charge les routes v1/v2 et enregistre les tasks Celery (via `core/celery_app.py`).
 2. `celery_worker` lance un worker qui importe `app.tasks` (enregistrement auto des pipelines).
 3. Jobs : l’API crée un enregistrement `crawl_jobs`, envoie une tâche vers Redis. Le worker consomme la tâche, utilise PostgreSQL pour lire/écrire les entités, puis met à jour `crawl_jobs`.
 4. Les clients peuvent accéder à l’API via `http://localhost:8000` (Swagger sur `/docs`). WebSocket (`core/websocket.py`) fonctionne via le même conteneur.

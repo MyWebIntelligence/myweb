@@ -4,23 +4,19 @@ MyWebIntelligence est une API FastAPI encapsulant les fonctionnalités du crawle
 
 ---
 
-## 🔴 ⚠️ ERREUR FRÉQUENTE À NE PLUS FAIRE ⚠️ 🔴
+## 🔴 ⚠️ SOURCE UNIQUE DU CRAWL ⚠️ 🔴
 
-### **DOUBLE CRAWLER : SYNC vs ASYNC - NE PAS OUBLIER !**
+### **Un seul moteur de crawl dans la V2**
 
-Le système utilise **DEUX crawlers différents** :
+Depuis la V2, toute la logique de crawl vit dans **un unique moteur** :
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  ❌ ERREUR FRÉQUENTE : Modifier seulement crawler_engine.py     │
+│  ✅ FICHIER À METTRE À JOUR : app/core/crawler_engine.py        │
 │                                                                  │
-│  ✅ SOLUTION : TOUJOURS modifier les DEUX crawlers !            │
+│  🔁 Utilisé partout : API FastAPI, tasks Celery, scripts tests   │
 │                                                                  │
-│  1️⃣  crawler_engine.py        (AsyncCrawlerEngine)            │
-│      └─ Utilisé par : API directe, tests unitaires             │
-│                                                                  │
-│  2️⃣  crawler_engine_sync.py   (SyncCrawlerEngine)             │
-│      └─ Utilisé par : Tasks Celery (crawl en production)       │
+│  🎯 Objectif : garder une seule source de vérité                │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -28,47 +24,23 @@ Le système utilise **DEUX crawlers différents** :
 
 Quand vous modifiez la logique de crawl :
 
-- [ ] ✅ Modifier `crawler_engine.py` (async)
-- [ ] ✅ Modifier `crawler_engine_sync.py` (sync)
-- [ ] ✅ Vérifier que les deux ont la même logique
-- [ ] ✅ Tester avec Celery (pas seulement l'API directe)
+- [ ] ✅ Mettre à jour `app/core/crawler_engine.py`
+- [ ] ✅ Lancer `tests/test-crawl-simple.sh` pour vérifier la régression
+- [ ] ✅ Valider les logs Celery (`docker logs mywebclient-celery_worker-1 --tail 50`)
+- [ ] ✅ Contrôler les écritures en base (champ `content`, métadonnées, scores)
 
-### **Exemples de Bugs Causés par Cette Erreur :**
+### **Bugs évités par cette unification :**
 
-1. **Bug du 14 octobre 2025** :
-   - Champ `content` (HTML) ajouté dans `crawler_engine.py`
-   - Oublié dans `crawler_engine_sync.py`
-   - **Résultat** : HTML NULL en base de données car Celery utilise la version sync
+1. Champs divergents (`content`, `keywords`, `http_status`) entre API et worker
+2. Calculs de pertinence/sentiment différents selon le point d'entrée
+3. Lecture en base incohérente lors des scripts de réindexation
 
-2. **Autres cas similaires** :
-   - Extraction de métadonnées (title, description, keywords)
-   - Nouvelle logique de calcul de relevance
-   - Modifications des champs sauvegardés en DB
-
-### **Pourquoi Deux Crawlers ?**
-
-- **Async** : Utilisé par FastAPI (native async)
-- **Sync** : Utilisé par Celery (workers ne supportent pas async proprement)
-
-### **Comment Vérifier ?**
-
-```bash
-# 1. Après modification, chercher la logique dans les DEUX fichiers
-grep -n "votre_modification" app/core/crawler_engine.py
-grep -n "votre_modification" app/core/crawler_engine_sync.py
-
-# 2. Tester avec Celery (pas seulement l'API)
-docker logs mywebclient-celery_worker-1 --tail 50
-
-# 3. Vérifier en DB que les données sont bien sauvegardées
-docker exec mywebclient-db-1 psql -U mwi_user -d mwi_db -c \
-  "SELECT * FROM expressions ORDER BY created_at DESC LIMIT 1;"
-```
+La règle est simple : **si le crawl change, le fichier `crawler_engine.py` doit refléter la nouvelle vérité**, et les tests opérateurs doivent confirmer le comportement de bout en bout.
 
 ---
 
 ## ✅ Recommandations Dev 2025-10
-- **Dupliquer et tester chaque évolution de crawl** : refléter les changements dans `app/core/crawler_engine.py` et `app/core/crawler_engine_sync.py`, puis exécuter `tests/test-crawl-async.sh` et `tests/test-crawl-simple.sh` pour vérifier la parité (voir `.claude/tasks/align_sync_async.md` et `.claude/tasks/README_TEST_ASYNC.md`).
+- **Tester chaque évolution de crawl** : `app/core/crawler_engine.py` est la source unique ; exécuter `tests/test-crawl-simple.sh` et un scénario complet (`tests/test-crawl.sh`) pour valider la parité API/Celery.
 - **Respecter les attributs ORM exacts** : utiliser les noms mappés (`expr.lang`, `expr.content`, etc.) plutôt que les noms de colonnes (`"language"`) pour éviter les écritures fantômes (`.claude/tasks/LANGUAGE_DETECTION_FIX.md`).
 - **Préserver la chaîne complète d’extraction** : conserver l’ordre Trafilatura → Archive.org → requêtes directes et propager toutes les métadonnées (`title`, `description`, `keywords`, `http_status`, `content`) conformément à `.claude/tasks/_TRANSFERT_API_CRAWL.md`.
 - **Réutiliser l’enrichissement markdown** : toute modification du readable ou des médias doit passer par `content_extractor.get_readable_content_with_fallbacks()` afin de garder les marqueurs `[IMAGE]/[VIDEO]/[AUDIO]` et la création de liens via `_create_links_from_markdown`.
@@ -91,24 +63,21 @@ docker exec mywebclient-db-1 psql -U mwi_user -d mwi_db -c \
 ```python
 # Dans app/main.py
 @app.on_event("startup")
-async def startup_event():
-    """Créer les tables au démarrage"""
-    from sqlalchemy.ext.asyncio import create_async_engine
-    autocommit_engine = create_async_engine(
-        settings.DATABASE_URL,
-        isolation_level="AUTOCOMMIT"  # ← CLÉ : évite rollback sur erreur
-    )
+def startup_event() -> None:
+    """Créer les tables au démarrage sans script externe."""
+    from app.db.session import engine
+
     try:
-        async with autocommit_engine.connect() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        with engine.begin() as connection:
+            Base.metadata.create_all(bind=connection)
         print("✅ Tables créées", flush=True)  # ← flush=True OBLIGATOIRE
-    except Exception as e:
-        if "already exists" in str(e):
+    except Exception as exc:
+        if "already exists" in str(exc):
             print("✅ Tables déjà existantes", flush=True)
         else:
             raise
     finally:
-        await autocommit_engine.dispose()
+        engine.dispose()
 ```
 
 ### **LEÇONS APPRISES :**
@@ -219,7 +188,7 @@ curl -s -w "%{http_code}" "http://localhost:8000/" -o /dev/null
 - `/api/v2/lands/` - Gestion des projets (lands)
 - `/api/v2/lands/{id}/crawl` - Lancement de crawls
 - `/api/v2/lands/{id}/readable` - Pipeline readable (extraction contenu)
-- `/api/v2/lands/{id}/media-analysis-async` - Analyse des médias (asynchrone)
+- `/api/v2/lands/{id}/media-analysis` - Analyse des médias (traitement Celery)
 - `/api/v2/lands/{id}/stats` - Statistiques
 
 ### Modèles de Données
@@ -288,7 +257,7 @@ dominant_colors: List[str] # Couleurs dominantes
 
 - **Tests & environnement**  
   - Les tests de crawling nécessitent `pytest`, `sqlalchemy`, `aiosqlite` dans le venv.  
-  - Sous Python 3.13, certaines wheels (`pydantic-core`, `asyncpg`, `pillow`) échouent à la compilation ; privilégier Python 3.11/3.12 ou installer Rust + toolchain compatible.
+  - Sous Python 3.13, certaines wheels (`pydantic-core`, `psycopg2`, `pillow`) échouent à la compilation ; privilégier Python 3.11/3.12 ou installer Rust + toolchain compatible.
 
 ## 🔄 Pipelines de Traitement
 
@@ -315,7 +284,7 @@ Expressions → Media URLs → Download → Analysis → Metadata Storage
                          PIL/OpenCV → Colors, Dimensions, EXIF
 ```
 
-**Endpoint:** `POST /api/v2/lands/{id}/media-analysis-async`
+**Endpoint:** `POST /api/v2/lands/{id}/media-analysis`
 ```json
 {
   "depth": 1,               // Profondeur max des expressions à analyser (0=URLs initiales, 1=liens directs, etc.)
@@ -359,41 +328,79 @@ Expressions → Content Extraction → Readable Content → Text Processing → 
 - **Validation LLM** : Optionnelle, améliore la qualité du contenu
 - **Segmentation** : Découpe en paragraphes pour l'embedding
 
-### 4. Pipeline LLM Validation (Intégré) ✅
+### 4. Pipeline LLM Validation (✅ RÉACTIVÉ - Octobre 2025)
 ```
 Expressions → OpenRouter API → Relevance Check → Database Update
                      ↓
               "oui"/"non" → valid_llm, valid_model → Relevance=0 si non pertinent
 ```
 
+**⚠️ STATUT : PLEINEMENT OPÉRATIONNEL dans la V2 (sync-only)**
+
+Le pipeline LLM Validation a été **réactivé et amélioré** en octobre 2025 :
+- ✅ Méthode synchrone ajoutée (`validate_expression_relevance_sync()`)
+- ✅ Intégration complète dans `SyncCrawlerEngine`
+- ✅ Support du flag `enable_llm` dans les tâches Celery
+- ✅ Script de reprocessing batch (`reprocess_llm_validation.py`)
+- ✅ Endpoint API `/llm-validate` pour retraitement
+- ✅ Tests unitaires complets (33 tests)
+- ✅ Documentation complète : [LLM_VALIDATION_GUIDE.md](.claude/docs/LLM_VALIDATION_GUIDE.md)
+
 **Intégration dans les pipelines existants :**
-- **Crawl avec LLM** : `POST /api/v2/lands/{id}/crawl` avec `"enable_llm": true`
-- **Readable avec LLM** : `POST /api/v2/lands/{id}/readable` avec `"enable_llm": true`
+
+1. **Crawl avec LLM (Nouveau)** : `POST /api/v2/lands/{id}/crawl` avec `"enable_llm": true`
+2. **Reprocessing batch (Nouveau)** : `POST /api/v2/lands/{id}/llm-validate`
+3. **Script CLI (Nouveau)** : `python -m app.scripts.reprocess_llm_validation --land-id <id>`
 
 **Configuration OpenRouter requise :**
 ```bash
 export OPENROUTER_ENABLED=True
 export OPENROUTER_API_KEY=sk-or-v1-your-key-here
 export OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
+export OPENROUTER_TIMEOUT=30
+export OPENROUTER_MAX_RETRIES=3
 ```
 
 **Exemples d'usage :**
+
 ```bash
-# Crawl avec validation LLM
+# 1. Crawl avec validation LLM automatique
 curl -X POST "http://localhost:8000/api/v2/lands/36/crawl" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"limit": 5, "enable_llm": true}'
+  -d '{
+    "limit": 10,
+    "enable_llm": true
+  }'
 
-# Readable avec validation LLM  
-curl -X POST "http://localhost:8000/api/v2/lands/36/readable" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"limit": 3, "enable_llm": true}'
+# 2. Reprocessing d'expressions existantes (via API)
+curl -X POST "http://localhost:8000/api/v2/lands/36/llm-validate?limit=50&force=false" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Reprocessing via script CLI
+docker exec mywebintelligenceapi python -m app.scripts.reprocess_llm_validation \
+  --land-id 36 \
+  --limit 100
+
+# 4. Dry-run (simulation sans écriture DB)
+docker exec mywebintelligenceapi python -m app.scripts.reprocess_llm_validation \
+  --land-id 36 \
+  --dry-run
 ```
 
 **Résultats stockés :**
 - `valid_llm` : "oui" (pertinent) ou "non" (non pertinent)
 - `valid_model` : Modèle utilisé (ex: "anthropic/claude-3.5-sonnet")
 - `relevance` : Mis à 0 si expression jugée non pertinente
+
+**Coûts estimés :**
+- Claude 3.5 Sonnet : ~$0.007 par validation
+- Claude 3 Haiku : ~$0.0015 par validation (70% moins cher)
+- 100 expressions/jour = ~$21/mois (Claude 3.5 Sonnet)
+
+**Documentation complète :**
+- **Guide utilisateur** : [.claude/docs/LLM_VALIDATION_GUIDE.md](.claude/docs/LLM_VALIDATION_GUIDE.md)
+- **Configuration OpenRouter** : [.claude/tasks/OPENROUTER_SETUP.md](.claude/tasks/OPENROUTER_SETUP.md)
+- **Plan d'implémentation** : [.claude/tasks/transfer_llm_validation.md](.claude/tasks/transfer_llm_validation.md)
 
 ---
 
@@ -552,8 +559,7 @@ LIMIT 10;
 | Fichier | Description |
 |---------|-------------|
 | `app/services/quality_scorer.py` | Service de calcul (5 blocs) |
-| `app/core/crawler_engine.py` | Intégration ASYNC (lignes 269-317) |
-| `app/core/crawler_engine_sync.py` | Intégration SYNC (lignes 341-389) |
+| `app/core/crawler_engine.py` | Intégration du quality score dans le crawler |
 | `app/scripts/reprocess_quality_scores.py` | Script de reprocessing |
 | `tests/unit/test_quality_scorer.py` | 33 tests unitaires ✅ |
 | `tests/data/quality_truth_table.json` | 20 cas de validation |
@@ -758,28 +764,28 @@ curl -X POST "http://localhost:8000/api/v2/lands/7/crawl" \
   -d '{"analyze_media": false, "limit": 25, "llm_validation": false}'
 ```
 
-### 5. Analyser les Médias (ASYNC)
+### 5. Analyser les Médias
 ```bash
 # Analyser TOUS les médias (toutes profondeurs, toute pertinence)
-curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis-async" \
+curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"depth": 0, "minrel": 3.0}'
 
 # Analyser uniquement les médias des URLs de départ (depth=0)
-curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis-async" \
+curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"depth": 0, "minrel": 0.0}'
 
 # Analyser avec filtre de pertinence (expressions très pertinentes seulement)
-curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis-async" \
+curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"minrel": 3.0}'
 
 # TEST RAPIDE - Analyser seulement les plus pertinents (recommandé)
-curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis-async" \
+curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"minrel": 3.0}'
@@ -931,7 +937,7 @@ LIMIT ?
 - **Solution:** `docker restart mywebintelligenceapi`
 
 ### Logs d'Analyse Média
-- **IMPORTANT:** L'analyse média est **ASYNCHRONE** (avec Celery)
+- **IMPORTANT:** L'analyse média est exécutée par une tâche Celery en arrière-plan
 - **Logs à surveiller:** `docker logs mywebclient-celery_worker-1 -f`
 - **Signaux d'activité:** 
   - `sklearn.base.py:1152: ConvergenceWarning` = Clustering couleurs dominantes
@@ -955,20 +961,16 @@ LIMIT ?
 
 ### Backend
 - **FastAPI** - Framework web moderne avec validation automatique
-- **SQLAlchemy 2.0** - ORM async avec modèles déclaratifs
+- **SQLAlchemy 2.0** - ORM moderne avec modèles déclaratifs
 - **PostgreSQL 15+** - Base de données relationnelle
-- **Celery** - Tâches asynchrones distribuées 
+- **Celery** - Tâches distribuées en arrière-plan 
 - **Redis** - Broker Celery et cache
 
 ### Analyse Media
 - **PIL/Pillow** - Traitement d'images (dimensions, format, EXIF)
 - **OpenCV** - Vision par ordinateur avancée
 - **scikit-learn** - Machine learning (clustering couleurs dominantes)
-- **httpx** - Client HTTP asynchrone pour téléchargement
-
-### Architecture Async
-- **AsyncSession** - Connexions DB non-bloquantes
-- **async/await** - Gestion asynchrone des tâches lourdes
+- **httpx** - Client HTTP fiable pour téléchargement
 - **WebSocket** - Suivi temps réel des jobs
 
 ### Containerisation
@@ -1019,12 +1021,12 @@ OPENROUTER_API_KEY=<pour-analyse-sémantique>
 
 **Localisation**: `MyWebIntelligenceAPI/tests/test-crawl-simple.sh`
 
-Ce script teste le **crawl synchrone** des 5 URLs Lecornu **sans les fonctionnalités async bugguées**.
+Ce script teste le **crawl synchrone** des 5 URLs Lecornu avec le pipeline minimal stable.
 
 ```bash
 #!/bin/bash
 # Test SIMPLE crawl sync - 5 URLs Lecornu
-# Sans media analysis async ni readable pipeline
+# Sans pipeline readable ni analyse média
 
 get_fresh_token() {
     TOKEN=$(curl -s -X POST "http://localhost:8000/api/v1/auth/login" \
@@ -1156,16 +1158,10 @@ docker logs mywebclient-celery_worker-1 --tail=50 | grep "CRAWL COMPLETED" -A 5
 
 ---
 
-### ⚠️ Script Complet avec Async (DÉPRÉCIÉ - contient des bugs)
+### ⚠️ Script Complet (en cours de stabilisation)
 
-Le script original avec analyse média async et pipeline readable contient des bugs asyncio et n'est **pas recommandé** pour le moment.
-
-**Problèmes connus:**
-- ❌ `RuntimeError: Task got Future attached to a different loop` dans media analysis async
-- ❌ Pipeline Readable utilise des URLs de test hardcodées (example.com, httpbin.org)
-- ❌ Erreurs `InterfaceError: another operation is in progress` dans les batch tasks
-
-**Script disponible**: `MyWebIntelligenceAPI/tests/test-crawl.sh` (pour référence uniquement)
+Le script historique `MyWebIntelligenceAPI/tests/test-crawl.sh` enchaîne crawl, analyse média et readable.  
+Il reste instable (verrous de base de données et traitements concurrents). Préférer le script simple ci-dessus jusqu'à nouvel ordre.
 
 ```
 
@@ -1176,21 +1172,17 @@ Le script original avec analyse média async et pipeline readable contient des b
 #### 1. **Bug `metadata_lang` non défini** (RÉSOLU - 2025-10-17)
 - **Problème** : `name 'metadata_lang' is not defined` lors du crawl
 - **Cause** : Variable renommée de `metadata_lang` → `final_lang` mais usage ancien non mis à jour
-- **Fichier** : `/app/app/core/crawler_engine_sync.py:251,256`
-- **Fix** : Remplacer `metadata_lang` par `final_lang` dans l'appel à `expression_relevance()`
+- **Fichier** : `/app/app/core/crawler_engine.py`
+- **Fix** : Utiliser `final_lang` comme langue effective lors du calcul de pertinence
 - **Impact** : 100% des URLs échouaient avant le fix
 
 **Code corrigé:**
 ```python
-# AVANT (buggué)
-relevance = asyncio.run(
-    text_processing.expression_relevance(land_dict, temp_expr, metadata_lang or "fr")
-)
+# AVANT (bugué)
+relevance = compute_relevance(land_dict, temp_expr, metadata_lang or "fr")
 
 # APRÈS (corrigé)
-relevance = asyncio.run(
-    text_processing.expression_relevance(land_dict, temp_expr, final_lang or "fr")
-)
+relevance = compute_relevance(land_dict, temp_expr, final_lang or "fr")
 ```
 
 #### 2. **Bug job_id** (RÉSOLU)
@@ -1208,15 +1200,14 @@ relevance = asyncio.run(
 - **Solution** : URLs directement dans `start_urls` lors de création
 - **Éviter** : `POST /api/v2/lands/{id}/urls`
 
-#### 5. **Bugs Asyncio dans Media Analysis & Readable** ⚠️ **NON RÉSOLU**
-- **Problème** : `RuntimeError: Task got Future attached to a different loop`
-- **Fichiers affectés** :
-  - `/app/app/tasks/media_analysis_task.py:51,237`
+#### 5. **Saturation du Worker Media Analysis** ⚠️
+- **Problème** : volumes massifs de médias saturent le worker lorsqu'on combine `depth=999` et `minrel` trop bas
+- **Fichiers concernés** :
+  - `/app/app/tasks/media_analysis_task.py`
   - `/app/app/tasks/readable_working_task.py`
-- **Erreurs associées** : `InterfaceError: another operation is in progress`
-- **Impact** : L'analyse média async et le pipeline readable sont instables
-- **Workaround** : Utiliser uniquement le crawl sync sans ces fonctionnalités
-- **Status** : À corriger - problème de gestion des event loops asyncio dans Celery
+- **Symptômes** : files de tâches longues, baisse de throughput, warnings PIL
+- **Workaround** : lancer l'analyse média via `/media-analysis` avec `minrel ≥ 1.0`, surveiller `docker logs mywebclient-celery_worker-1`
+- **Status** : optimisation en cours (ajouter throttling + pagination de médias)
 
 #### 6. **Mots-clés Obligatoires** ⚠️
 - **Problème** : Sans mots-clés, `relevance=0` pour toutes expressions
@@ -1228,7 +1219,6 @@ relevance = asyncio.run(
 - **`depth: 1`** = Analyser médias des **liens directs** depuis start_urls
 - **`depth: 2`** = Analyser médias des **liens de liens** (2e niveau)
 - **`depth: 999`** = Analyser **TOUS** les médias sans limite de profondeur
-- **⚠️ BUG ENDPOINT** : L'endpoint `/media-analysis-async` ignore le paramètre `depth` et force toujours `depth: 999`
 
 ### 🎯 **Workflow Anti-Erreurs (CRAWL SYNC)**
 
@@ -1293,16 +1283,16 @@ curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/crawl" \
   -d '{"limit": 3}' --max-time 120
 ```
 
-### Test 5 : Analyse Média (ASYNC)
+### Test 5 : Analyse Média
 ```bash
 # Analyse rapide (expressions très pertinentes seulement)
-curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis-async" \
+curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"depth": 0, "minrel": 3.0}'
 
 # Analyse complète (toutes expressions)  
-curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis-async" \
+curl -X POST "http://localhost:8000/api/v2/lands/${LAND_ID}/media-analysis" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"minrel": 0.0}'

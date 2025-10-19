@@ -1176,3 +1176,92 @@ async def fix_land_pipeline_v2(
             status_code=500,
             detail=f"Failed to fix pipeline: {str(e)}"
         )
+
+
+@router.post("/{land_id}/llm-validate", response_model=Dict[str, Any])
+async def llm_validate_land_v2(
+    land_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    limit: Optional[int] = Query(None, description="Max number of expressions to validate"),
+    force: bool = Query(False, description="Force revalidation even if valid_llm exists")
+) -> Dict[str, Any]:
+    """
+    Start LLM validation reprocessing for a land's expressions.
+
+    Validates expressions that:
+    - Have relevance > 0 (are considered relevant by keyword matching)
+    - Don't have valid_llm set (unless force=True)
+    - Have readable content
+
+    This uses OpenRouter API and requires:
+    - OPENROUTER_ENABLED=True
+    - OPENROUTER_API_KEY=<your-key>
+
+    Returns:
+        Statistics about the validation process
+    """
+    # Verify land exists and user has access
+    land = await crud_land.get(db, id=land_id)
+    if not land:
+        raise HTTPException(status_code=404, detail="Land not found")
+
+    if land.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Check if OpenRouter is enabled
+    from app.config import settings
+    if not settings.OPENROUTER_ENABLED:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "OPENROUTER_DISABLED",
+                "message": "LLM validation is not enabled",
+                "details": {"land_id": land_id},
+                "suggestion": "Set OPENROUTER_ENABLED=True in .env"
+            }
+        )
+
+    if not settings.OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "OPENROUTER_NOT_CONFIGURED",
+                "message": "OpenRouter API key is not configured",
+                "details": {"land_id": land_id},
+                "suggestion": "Set OPENROUTER_API_KEY in .env"
+            }
+        )
+
+    try:
+        from app.scripts.reprocess_llm_validation import reprocess_llm_validation
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session as SyncSession
+
+        # Create sync engine for the reprocessing script
+        sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
+        engine = create_engine(sync_url, echo=False)
+
+        # Run reprocessing in background
+        # Note: For production, this should be a Celery task
+        stats = reprocess_llm_validation(
+            land_id=land_id,
+            limit=limit,
+            dry_run=False,
+            force=force,
+            batch_size=50
+        )
+
+        return {
+            "land_id": land_id,
+            "land_name": land.name,
+            "stats": stats,
+            "message": f"LLM validation completed: {stats['validated']} validated, {stats['rejected']} rejected"
+        }
+
+    except Exception as e:
+        logger.error(f"LLM validation failed for land {land_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to run LLM validation: {str(e)}"
+        )

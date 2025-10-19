@@ -80,6 +80,7 @@ class SyncCrawlerEngine:
         depth: Optional[int] = None,
         http_status: Optional[str] = None,
         analyze_media: bool = False,
+        enable_llm: bool = False,
     ) -> Tuple[int, int, Dict[str, int]]:
         """Crawl the land synchronously and return processed, error counts, stats."""
         land, expressions = self.prepare_crawl(
@@ -91,7 +92,11 @@ class SyncCrawlerEngine:
         if land is None:
             return 0, 0, {}
 
-        processed, errors, stats = self.crawl_expressions(expressions, analyze_media=analyze_media)
+        processed, errors, stats = self.crawl_expressions(
+            expressions,
+            analyze_media=analyze_media,
+            enable_llm=enable_llm
+        )
         self.http_client.close()
         return processed, errors, stats
 
@@ -99,6 +104,7 @@ class SyncCrawlerEngine:
         self,
         expressions: Iterable[models.Expression],
         analyze_media: bool = False,
+        enable_llm: bool = False,
     ) -> Tuple[int, int, Dict[str, int]]:
         """Process expressions sequentially."""
         processed = 0
@@ -117,7 +123,11 @@ class SyncCrawlerEngine:
                 continue
 
             try:
-                status_code = self.crawl_expression(expr, analyze_media=analyze_media)
+                status_code = self.crawl_expression(
+                    expr,
+                    analyze_media=analyze_media,
+                    enable_llm=enable_llm
+                )
                 self.db.commit()
                 processed += 1
                 if status_code is not None:
@@ -130,10 +140,15 @@ class SyncCrawlerEngine:
 
         return processed, errors, dict(http_stats)
 
-    def crawl_expression(self, expr: models.Expression, analyze_media: bool = False) -> Optional[int]:
+    def crawl_expression(
+        self,
+        expr: models.Expression,
+        analyze_media: bool = False,
+        enable_llm: bool = False
+    ) -> Optional[int]:
         """Fetch, analyse and store an expression."""
         expr_url = str(expr.url)
-        logger.info("Crawling URL: %s (analyze_media=%s)", expr_url, analyze_media)
+        logger.info("Crawling URL: %s (analyze_media=%s, enable_llm=%s)", expr_url, analyze_media, enable_llm)
 
         html_content = ""
         http_status_code: Optional[int] = None
@@ -292,6 +307,56 @@ class SyncCrawlerEngine:
                 )
                 loop.close()
             update_data["relevance"] = relevance
+
+            # LLM Validation (if enabled and expression is relevant)
+            if enable_llm and settings.OPENROUTER_ENABLED and relevance > 0:
+                try:
+                    from app.services.llm_validation_service import LLMValidationService
+
+                    # Get land from DB
+                    land = self.db.query(models.Land).filter(models.Land.id == expr.land_id).first()
+
+                    if land:
+                        # Create temp expression with current update_data for validation
+                        class TempExprLLM:
+                            def __init__(self):
+                                self.id = expr.id
+                                self.url = expr_url
+                                self.title = update_data.get("title")
+                                self.description = update_data.get("description")
+                                self.readable = readable_content
+                                self.lang = final_lang
+
+                        temp_expr_llm = TempExprLLM()
+
+                        # V2 SYNC-ONLY: Direct synchronous call (no async)
+                        llm_service = LLMValidationService(self.db)
+
+                        validation_result = llm_service.validate_expression_relevance(
+                            temp_expr_llm,
+                            land
+                        )
+
+                        # Update validation fields
+                        update_data["valid_llm"] = 'oui' if validation_result.is_relevant else 'non'
+                        update_data["valid_model"] = validation_result.model_used
+
+                        # If not relevant according to LLM, set relevance to 0
+                        if not validation_result.is_relevant:
+                            update_data["relevance"] = 0
+                            logger.info(
+                                f"[LLM] Expression {expr.id} marked as non-relevant by {validation_result.model_used}"
+                            )
+                        else:
+                            logger.info(
+                                f"[LLM] Expression {expr.id} validated as relevant by {validation_result.model_used}"
+                            )
+                    else:
+                        logger.warning(f"[LLM] Could not validate: land {expr.land_id} not found")
+
+                except Exception as e:
+                    logger.error(f"[LLM] Validation failed for {expr_url}: {e}")
+                    # Continue without LLM validation (non-blocking)
 
             # Sentiment Analysis (if enabled)
             if settings.ENABLE_SENTIMENT_ANALYSIS:

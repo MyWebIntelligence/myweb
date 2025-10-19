@@ -52,14 +52,16 @@ def crawl_land_task(self, job_id: int, ws_channel: str | None = None) -> None:
         depth = params.get("depth") if isinstance(params, dict) else None
         http_status = params.get("http_status") if isinstance(params, dict) else None
         analyze_media = bool(params.get("analyze_media")) if isinstance(params, dict) else False
+        enable_llm = bool(params.get("enable_llm")) if isinstance(params, dict) else False
 
         logger.info(
-            "Land ID: %s | limit=%s depth=%s http_status=%s analyze_media=%s",
+            "Land ID: %s | limit=%s depth=%s http_status=%s analyze_media=%s enable_llm=%s",
             land_id_for_logging,
             limit,
             depth,
             http_status,
             analyze_media,
+            enable_llm,
         )
 
         engine = SyncCrawlerEngine(db)
@@ -94,6 +96,7 @@ def crawl_land_task(self, job_id: int, ws_channel: str | None = None) -> None:
         processed, errors, http_stats = engine.crawl_expressions(
             expressions,
             analyze_media=analyze_media,
+            enable_llm=enable_llm,
         )
 
         end_time = datetime.now(timezone.utc)
